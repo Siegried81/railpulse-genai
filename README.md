@@ -10,21 +10,20 @@ I built RailPulse AI, a chat assistant that turns natural-language questions abo
 
 ## 📑 Table of Contents
 
-- [Quick Start](#quick-start-windows)
-- [Features](#features)
-- [Setup](#setup)
-- [Quick Validation](#quick-validation)
-- [Project Structure](#project-structure)
-- [Data Schema](#data-schema)
-- [Example Queries](#example-queries)
-- [Weekly Reports](#weekly-reports)
-- [Known Limitations](#known-limitations)
-- [Key Challenges](#key-challenges)
-- [Nice-to-Have Features](#nice-to-have-features)
-- [Deliverables](#deliverables)
-- [Conclusion](#conclusion)
-- [Author](#author)
+- [Quick Start](#anchor-quick-start)
+- [Features](#anchor-features)
+- [Setup](#anchor-setup)
+- [Quick Validation](#anchor-quick-validation)
+- [Project Structure](#anchor-project-structure)
+- [Data Schema](#anchor-data-schema)
+- [Example Queries](#anchor-example-queries)
+- [Weekly Reports](#anchor-weekly-reports)
+- [Known Limitations](#anchor-known-limitations)
+- [Key Challenges](#anchor-key-challenges)
+- [Conclusion](#anchor-conclusion)
+- [Author](#anchor-author)
 
+<a name="anchor-quick-start"></a>
 ## 🚀 Quick Start (Windows)
 
 The database is already included in this repo (`data/railpulse_ai.db`). Configure the provider
@@ -40,6 +39,7 @@ A sample weekly report is already included in `reports/`. I generate it with:
 python scripts\generate_weekly_report.py
 ```
 
+<a name="anchor-features"></a>
 ## ✨ Features
 
 - **Text-to-SQL**: I translate natural language questions into SQL and execute them against the database.
@@ -60,6 +60,7 @@ Multilingual questions work out of the box, since the underlying model handles t
 
 ![Asking a question in French](images/french_language_query.png)
 
+<a name="anchor-setup"></a>
 ## ⚙️ Setup
 
 ### 1. Install dependencies
@@ -113,6 +114,7 @@ OLLAMA_MODEL=llama3.2:3b
 python -m streamlit run app/streamlit_app.py --server.address=127.0.0.1
 ```
 
+<a name="anchor-quick-validation"></a>
 ## ✅ Quick Validation
 
 Once [Setup](#setup) is done, confirm everything works end-to-end:
@@ -122,6 +124,7 @@ python test_pipeline.py
 ```
 Real smoke test (8 questions through the full pipeline) — uses LLM quota.
 
+<a name="anchor-project-structure"></a>
 ## 🗂️ Project Structure
 
 ```
@@ -151,6 +154,7 @@ railpulse-genai/
 └── test_pipeline.py            # CLI smoke-test harness
 ```
 
+<a name="anchor-data-schema"></a>
 ## 🗃️ Data Schema
 
 5 tables loaded into SQLite from the Power BI export:
@@ -169,6 +173,7 @@ info joined in, so most questions don't require any JOIN.
 - **`trips`** — `trip_id` + normalized `trip_base_id` for safe 1:1 joins to `vehicle_id`
 - **`vehicles`** — vehicle type and direction
 
+<a name="anchor-example-queries"></a>
 ## 💬 Example Queries
 
 Comparisons get a grounded recommendation; questions touching unavailable data (see
@@ -176,6 +181,7 @@ Comparisons get a grounded recommendation; questions touching unavailable data (
 
 ![Train category delay ranking with a grounded recommendation, and a graceful decline on an unavailable wheelchair-accessibility question](images/train_category_and_decline.png)
 
+<a name="anchor-weekly-reports"></a>
 ## 📄 Weekly Reports
 
 `scripts/generate_weekly_report.py` runs a fixed set of aggregate queries (on-time rate, delay
@@ -188,6 +194,7 @@ straight from SQL, so it carries zero hallucination risk. Stations with fewer th
 the period are excluded as statistically unreliable. Output goes to
 `reports/weekly_report_<YYYYMMDD>.md`; a sample is already committed in `reports/`.
 
+<a name="anchor-known-limitations"></a>
 ## ⚠️ Known Limitations
 
 I clearly specify what the assistant can't answer reliably, both in its sidebar and in its
@@ -208,13 +215,16 @@ actual behavior — it declines gracefully instead of guessing:
 - No root-cause column exists in the schema (no dwell-time, signalling, or weather data) — the
   assistant can report a delay number, never explain its cause.
 
+<a name="anchor-key-challenges"></a>
 ## 🧠 Key Challenges
 
 - **Deduplication needed a second key I initially missed.** The GTFS-Realtime poller re-captures
   the same still-upcoming train every polling cycle, so a naive "remove duplicate `record_id`"
   check catches nothing — each duplicate gets its own new ID. My first fix, dedup on `(vehicle_id, 
-  Scheduled Date)`, correctly turned 980K raw rows into ~12.6K — but `vehicle_id` identifies a whole train journey, not a single stop, so it silently collapsed every multi-stop train down to just one station. 
-  Adding `station_id` to the key fixed it: every legitimate stop now survives, only true re-polls of the same stop collapse, expanding the database to its real final size of 99,014 rows.
+  Scheduled Date)`, correctly turned 980K raw rows into ~12.6K — but `vehicle_id` identifies a whole 
+  train journey, not a single stop, so it silently collapsed every multi-stop train down to just one station. 
+  Adding `station_id` to the key fixed it: every legitimate stop now survives, only true re-polls of the same 
+  stop collapse, expanding the database to its real final size of 99,014 rows.
 - **A weak free-tier model doesn't always follow its own instructions.** Prompt-level rules alone
   weren't enough — the model would still occasionally query a forbidden column, pick the wrong
   sort direction, or pad a recommendation with an invented cause the SQL never looked at. I built
@@ -227,35 +237,12 @@ actual behavior — it declines gracefully instead of guessing:
   I reduced the smoke test suite itself from 18 to 8 questions to stay well below the daily quota
   for the free plan.
 
-## ✅ Deliverables
-
-- [x] GitHub repository with the full application source code
-- [x] Documented local setup guide (see [Setup](#setup))
-- [x] Prompt engineering file (`app/prompts.py`) with structured few-shot guidelines for open-source models
-
-## 🌟 Nice-to-Have Features
-
-All 3 optional stretch goals from the assignment brief are implemented:
-
-- [x] **Strict Query Validation (Safety Layer)** — `guardrails.py` blocks `DROP`, `DELETE`, `UPDATE`,
-  `INSERT`, `ALTER`, and other destructive keywords before any generated SQL reaches the database.
-  I went a layer further than the brief asked: the SQLite connection itself is opened in true
-  read-only mode (`?mode=ro` in `db.py`), so even a query that somehow slipped past the regex
-  still can't write to disk.
-- [x] **Dynamic Few-Shot Prompting** — `prompts.py` pairs sample questions with exact, schema-correct
-  SQL for this dataset's specific quirks (the `trip_base_id` join, minimum-sample-size guards — 10 for
-  stations, 5 for train categories — the CASE/GROUP BY tautology trap), so a small open-source model
-  has a concrete pattern to match instead of guessing at the schema from scratch.
-- [x] **Automated Weekly Report Generator** — `scripts/generate_weekly_report.py` pulls the top delay
-  anomalies (worst/best stations, severity breakdown, day-of-week and train-category trends) and asks
-  the LLM to write a short executive summary in Markdown, validated against the same anti-hallucination
-  guards used in the chat. The per-station detail table underneath is rendered straight from SQL, not
-  the LLM, so it carries zero hallucination risk.
-
+<a name="anchor-conclusion"></a>
 ## 🏁 Conclusion
 
 This project took me from a single Power BI export to a working, provider-agnostic chat assistant that someone with no SQL knowledge could safely use. The biggest lesson wasn't really about text-to-SQL prompting — it was learning not to fully trust a free, lightweight model to follow instructions every single time, and building a second, deterministic safety net (validators/correctors)in code instead. And I don't know if the paid plan is better, but I guess it is. There's always room for improvement, but this is where my RailPulse adventure ends, for now.
 
+<a name="anchor-author"></a>
 ## 👩‍💻 Author
 
 Siegried Camus — BeCode AI & Data Science bootcamp
