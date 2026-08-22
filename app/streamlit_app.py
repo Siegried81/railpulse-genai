@@ -51,14 +51,15 @@ st.set_page_config(page_title="RailPulse AI", page_icon="🚆", layout="wide")
 EXAMPLE_QUESTIONS = [
     "Which station had the worst average delay this week?",
     "What percentage of trains were on time overall?",
+    "Show me the 10 most delayed trains at Bruxelles-Central.",
     "How does average delay compare between weekdays and weekends?",
     "Which train category has the most delays?",
-    "What is the busiest hour for train departures at Liège-Guillemins?",]
+    "What is the on-time rate breakdown by delay severity category?",
+    "Show me the 10 most delayed trains at Anvers-Central.",
+    "Compare average delay between Bruxelles-Central and Anvers-Central.",
+    "What is the average delay per day of the week?",
+]
 
-# --------------------------------------------------------------------------
-# Light custom styling -- SNCB-inspired navy/grey accents on top of the
-# primaryColor/secondaryBackgroundColor set in .streamlit/config.toml
-# --------------------------------------------------------------------------
 st.markdown(
     """
     <style>
