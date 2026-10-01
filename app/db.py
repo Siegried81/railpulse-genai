@@ -22,6 +22,15 @@ MAX_ROWS = 500  # hard cap, regardless of what the LLM's SQL asks for
 
 
 def get_connection() -> sqlite3.Connection:
+    """
+    Open the database in true read-only mode via SQLite's URI syntax.
+
+    Uses Path.as_uri() rather than manual string formatting: on Windows,
+    a raw f"file:{path}" with backslashes produces a malformed URI that
+    SQLite silently fails to open ("unable to open database file"),
+    even though the file exists. as_uri() handles the OS-specific
+    conversion correctly (e.g. file:///D:/Users/.../railpulse_ai.db).
+    """
     db_path = Path(config.DB_PATH).resolve()
     uri = db_path.as_uri() + "?mode=ro"
     conn = sqlite3.connect(uri, uri=True)

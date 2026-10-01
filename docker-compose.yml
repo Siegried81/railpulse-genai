@@ -1,0 +1,29 @@
+services:
+  railpulse:
+    build: .
+    container_name: railpulse-ai
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./reports:/app/reports
+      - ./.streamlit:/app/.streamlit
+    # env_file loads the API keys from the local, gitignored .env
+    # (see .env.example for the variable names).
+    env_file:
+      - .env
+    environment:
+      # Values here OVERRIDE the same keys in .env: the container always runs
+      # on Groq (faster and more reliable than a CPU-only Ollama), whatever
+      # LLM_PROVIDER says in .env. Remove these two lines to let .env decide.
+      - LLM_PROVIDER=groq
+      - GROQ_MODEL=openai/gpt-oss-120b
+
+      # Database path (inside container)
+      - DB_PATH=data/railpulse_ai.db
+    networks:
+      - railpulse-net
+
+networks:
+  railpulse-net:
+    driver: bridge
