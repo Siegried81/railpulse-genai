@@ -6,47 +6,110 @@ Run with:
 """
 
 import io
+import sys
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from app.llm_client import (
-    call_llm,
-    call_llm_until,
-    validate_consultant_numbers,
-    validate_no_false_generalization,
-    validate_no_invented_entities,
-    validate_superlative_sql_direction,
-    validate_no_self_referential_case_filter,
-    validate_no_unreliable_wheelchair_query,
-    validate_no_raw_category_delay_count_ranking,
-    validate_on_time_uses_delay_severity,
-    validate_station_ranking_has_min_sample,
-    validate_no_query_reason_matches_question,
-    force_reason_mismatch_worst_best_station,
-    validate_station_query_matches_question_stations,
-    force_no_query_if_unreliable_wheelchair,
-    force_no_query_if_self_referential_case,
-    force_no_query_if_raw_category_delay_count_ranking,
-    force_no_query_if_on_time_wrong_definition,
-    force_no_query_if_station_ranking_unreliable,
-    correct_consultant_numbers,
-    correct_consultant_generalization,
-    correct_no_invented_entities,
-    auto_fix_superlative_claims,
-    auto_fix_misdirected_recommendation,
-    strip_ungrounded_time_reference,
-    strip_invented_cause,
-    strip_recommendation_after_unavailability_disclaimer,
-    replace_vague_period_with_dates,
-    LLMConnectionError,
-)
+# `streamlit run app/streamlit_app.py` puts only app/ on sys.path (Streamlit
+# Cloud starts it this way), so add the repo root to make the `app` package
+# importable without `python -m`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.llm_client import call_llm, call_llm_until, looks_like_leaked_meta, LLMConnectionError
 from app.db import execute_query
-from app.prompts import TEXT_TO_SQL_SYSTEM_PROMPT, CONSULTANT_SYSTEM_PROMPT
-from app.sql_utils import extract_sql
-from app import config
+from app.prompts import (
+    CONSULTANT_MAX_TOKENS,
+    CONSULTANT_SYSTEM_PROMPT,
+    SQL_MAX_TOKENS,
+    TEXT_TO_SQL_SYSTEM_PROMPT,
+)
+from app.sql_utils import extract_sql, build_consultant_input, rows_in_minutes, ungrounded_figures
+from app import config, llm_client
 
 st.set_page_config(page_title="RailPulse AI", page_icon="🚆", layout="wide")
+
+# Simple geometric train icon (original design, not the SNCB logo) in two
+# color variants: navy-on-light for the white main area, white-on-navy for
+# the sidebar (its cutout windows use the sidebar's own navy as "glass").
+_TRAIN_ICON_NAVY = """<svg width="{size}" height="{size}" viewBox="0 0 100 90" style="vertical-align:middle">
+<rect x="8" y="14" width="84" height="48" rx="12" fill="#0C3B8C"/>
+<rect x="16" y="26" width="20" height="18" rx="3" fill="#FFFFFF"/>
+<rect x="44" y="26" width="20" height="18" rx="3" fill="#FFFFFF"/>
+<rect x="72" y="26" width="12" height="18" rx="3" fill="#FFFFFF"/>
+<rect x="2" y="62" width="96" height="6" rx="3" fill="#3D63B0"/>
+<circle cx="22" cy="74" r="8" fill="#0C3B8C"/>
+<circle cx="78" cy="74" r="8" fill="#0C3B8C"/>
+</svg>"""
+
+_TRAIN_ICON_WHITE = """<svg width="{size}" height="{size}" viewBox="0 0 100 90" style="vertical-align:middle">
+<rect x="8" y="14" width="84" height="48" rx="12" fill="#FFFFFF"/>
+<rect x="16" y="26" width="20" height="18" rx="3" fill="#0C3B8C"/>
+<rect x="44" y="26" width="20" height="18" rx="3" fill="#0C3B8C"/>
+<rect x="72" y="26" width="12" height="18" rx="3" fill="#0C3B8C"/>
+<rect x="2" y="62" width="96" height="6" rx="3" fill="#A9C2EA"/>
+<circle cx="22" cy="74" r="8" fill="#FFFFFF"/>
+<circle cx="78" cy="74" r="8" fill="#FFFFFF"/>
+</svg>"""
+
+
+def _train_title(size: int, icon_variant: str, text_size: str, text_color: str = "inherit") -> str:
+    icon = icon_variant.format(size=size)
+    return (
+        f'<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.2rem;">'
+        f'{icon}<span style="font-size:{text_size};font-weight:700;color:{text_color};">'
+        f"RailPulse AI</span></div>"
+    )
+
+def _answered_by(sql_by: str | None, answer_by: str | None) -> str | None:
+    """Caption naming the model(s) that actually answered.
+
+    With LLM_PROVIDER="auto" the SQL and the explanation can come from two
+    different providers, so both are shown when they differ.
+    """
+    if not sql_by and not answer_by:
+        return None
+    if sql_by == answer_by or not sql_by or not answer_by:
+        return f"Answered by {sql_by or answer_by}"
+    return f"SQL by {sql_by} · answer by {answer_by}"
+
+
+def _render_sql_and_data(sql: str | None, rows: list[dict] | None, file_index: int, key_suffix: str) -> None:
+    """Show the SQL and the result table, each with a download button.
+
+    Shared by the chat history and the fresh answer so both render the same
+    way. The table and the CSV go through rows_in_minutes(), the same
+    conversion the consultant sees, so a person never reads a delay in
+    seconds next to an answer given in minutes. The raw rows kept in
+    session_state are not modified.
+    """
+    if sql:
+        with st.expander("🔎 SQL query used"):
+            st.code(sql, language="sql")
+            st.download_button(
+                "⬇️ Download SQL",
+                data=sql,
+                file_name=f"railpulse_query_{file_index}.sql",
+                mime="text/plain",
+                key=f"sql_dl_{key_suffix}",
+            )
+    if rows:
+        df = pd.DataFrame(rows_in_minutes(rows))
+        with st.expander(f"📊 Raw data ({len(df)} rows)"):
+            if list(df.columns) != list(rows[0].keys()):
+                st.caption("Delay columns converted from seconds to minutes.")
+            st.dataframe(df, use_container_width=True)
+            csv_buffer = io.StringIO()
+            df.to_csv(csv_buffer, index=False)
+            st.download_button(
+                "⬇️ Download CSV",
+                data=csv_buffer.getvalue(),
+                file_name=f"railpulse_results_{file_index}.csv",
+                mime="text/csv",
+                key=f"csv_dl_{key_suffix}",
+            )
+
 
 EXAMPLE_QUESTIONS = [
     "Which station had the worst average delay this week?",
@@ -54,12 +117,14 @@ EXAMPLE_QUESTIONS = [
     "Show me the 10 most delayed trains at Bruxelles-Central.",
     "How does average delay compare between weekdays and weekends?",
     "Which train category has the most delays?",
-    "What is the on-time rate breakdown by delay severity category?",
-    "Show me the 10 most delayed trains at Anvers-Central.",
-    "Compare average delay between Bruxelles-Central and Anvers-Central.",
-    "What is the average delay per day of the week?",
+    "What is the busiest hour for train departures at Liège-Guillemins?",
+    "List the top 5 stations by cancellation count.",
 ]
 
+# --------------------------------------------------------------------------
+# Light custom styling -- SNCB-inspired navy/grey accents on top of the
+# primaryColor/secondaryBackgroundColor set in .streamlit/config.toml
+# --------------------------------------------------------------------------
 st.markdown(
     """
     <style>
@@ -110,38 +175,21 @@ if "queued_question" not in st.session_state:
     st.session_state.queued_question = None
 
 _MODEL_BY_PROVIDER = {
+    "auto": " → ".join(config.AUTO_PROVIDER_ORDER),
+    "deepseek": config.DEEPSEEK_MODEL,
     "ollama": config.OLLAMA_MODEL,
     "groq": config.GROQ_MODEL,
+    "openrouter": config.OPENROUTER_MODEL,
+    "anthropic": config.ANTHROPIC_MODEL,
 }
 active_model = _MODEL_BY_PROVIDER.get(config.LLM_PROVIDER, "unknown")
-
-
-@st.cache_data(ttl=3600)
-def _get_data_date_range() -> tuple[str, str] | None:
-    """Fetch the actual min/max Scheduled Date from the data, so the date
-    range shown in the UI can never drift out of sync with what's really in
-    the database. Cached for an hour since this is a fixed historical
-    snapshot that doesn't change during a session. Returns None if the
-    query fails for any reason, so the UI can degrade gracefully.
-    """
-    try:
-        rows = execute_query(
-            'SELECT MIN("Scheduled Date") AS min_date, MAX("Scheduled Date") AS max_date '
-            "FROM liveboard_records;"
-        )
-        if rows and rows[0].get("min_date") and rows[0].get("max_date"):
-            return rows[0]["min_date"], rows[0]["max_date"]
-    except Exception as e:
-        st.error(f"DEBUG date range fetch failed: {e}")
-    return None
-
 
 # --------------------------------------------------------------------------
 # Sidebar
 # --------------------------------------------------------------------------
 with st.sidebar:
     st.markdown(f'<span class="rp-badge">● {config.LLM_PROVIDER} · {active_model}</span>', unsafe_allow_html=True)
-    st.title("🚆 RailPulse AI")
+    st.markdown(_train_title(32, _TRAIN_ICON_WHITE, "1.6rem", "#FFFFFF"), unsafe_allow_html=True)
     st.caption("On-call Railway Operations Assistant")
 
     st.divider()
@@ -157,7 +205,7 @@ with st.sidebar:
     with st.expander("ℹ️ What can I ask?"):
         st.markdown(
             """
-            Ask about Belgian rail delays, on-time rates, busiest
+            Ask about Belgian rail delays, cancellations, on-time rates, busiest
             stations, train categories, or accessibility -- station-level detail,
             not real-time.
 
@@ -167,9 +215,6 @@ with st.sidebar:
             - Direction-level data is unavailable.
             - Wheelchair accessibility data is not meaningfully populated in the
               source feed.
-            - Cancellation data shows zero canceled trains in this dataset --
-              the "canceled" flag is always 0 at the source, so cancellation
-              questions won't return meaningful results.
             - Data covers **2026-07-27 to 2026-08-07** only (fixed historical
               snapshot, not real-time).
             """
@@ -187,25 +232,16 @@ with st.sidebar:
 # --------------------------------------------------------------------------
 # Main area
 # --------------------------------------------------------------------------
-st.title("🚆 RailPulse AI")
+st.markdown(_train_title(44, _TRAIN_ICON_NAVY, "2.25rem", "#14213D"), unsafe_allow_html=True)
 st.caption(
     f"On-call Railway Operations Assistant · running on **{config.LLM_PROVIDER}** ({active_model})"
 )
-
-_date_range = _get_data_date_range()
-if _date_range:
-    st.markdown(
-        f'<span class="rp-badge" style="color:#14213D !important; '
-        f'background:#EEF1F6; border-color:#0C3B8C;">'
-        f"📅 Data covers {_date_range[0]} to {_date_range[1]} (fixed historical snapshot)</span>",
-        unsafe_allow_html=True,
-    )
 
 if not st.session_state.messages:
     st.markdown(
         """
         <div class="rp-welcome">
-        👋 <b>Welcome.</b> Ask me anything about Belgian rail delays,
+        👋 <b>Welcome.</b> Ask me anything about Belgian rail delays, cancellations,
         on-time rates, busiest stations, or train categories -- or pick a question
         from the sidebar to get started.
         </div>
@@ -216,34 +252,14 @@ if not st.session_state.messages:
 for idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        if msg.get("sql"):
-            with st.expander("🔎 SQL query used"):
-                st.code(msg["sql"], language="sql")
-                st.download_button(
-                    "⬇️ Download SQL",
-                    data=msg["sql"],
-                    file_name=f"railpulse_query_{idx}.sql",
-                    mime="text/plain",
-                    key=f"sql_dl_{idx}",
-                )
-        if msg.get("rows"):
-            df = pd.DataFrame(msg["rows"])
-            with st.expander(f"📊 Raw data ({len(df)} rows)"):
-                st.dataframe(df, use_container_width=True)
-                csv_buffer = io.StringIO()
-                df.to_csv(csv_buffer, index=False)
-                st.download_button(
-                    "⬇️ Download CSV",
-                    data=csv_buffer.getvalue(),
-                    file_name=f"railpulse_results_{idx}.csv",
-                    mime="text/csv",
-                    key=f"csv_dl_{idx}",
-                )
+        if msg.get("answered_by"):
+            st.caption(msg["answered_by"])
+        _render_sql_and_data(msg.get("sql"), msg.get("rows"), file_index=idx, key_suffix=str(idx))
 
 # --------------------------------------------------------------------------
 # Input handling (chat box OR a sidebar example question)
 # --------------------------------------------------------------------------
-question = st.chat_input("Ask about delays, on-time rate, busiest stations...")
+question = st.chat_input("Ask about delays, cancellations, on-time rate...")
 
 if st.session_state.queued_question:
     question = st.session_state.queued_question
@@ -255,159 +271,86 @@ if question:
         st.markdown(question)
 
     with st.chat_message("assistant"):
-        sql = None
-        rows = None
-        answer = None
-        # outcome tracks which branch fired so the display code after the
-        # status widget can reproduce the exact same messages/keys as before,
-        # instead of nesting everything inside the status block (where
-        # st.error/st.warning would end up hidden once the status collapses).
-        outcome = None  # "llm_error" | "no_query" | "blocked" | "llm_error_step2" | "ok"
-
-        with st.status("Working on your question...", expanded=False) as status:
-            # --- Step 1: text-to-SQL ---
-            status.update(label="Translating your question into SQL...")
-            try:
+        # --- Step 1: text-to-SQL ---
+        try:
+            with st.spinner("Translating your question into SQL..."):
                 # stop=(";",) halts generation right after the query, which is
                 # both faster (no rambling) and safer (no stray text after the
-                # semicolon that could trip the "multiple statements" guardrail)
+                # semicolon that could trip the "multiple statements" guardrail).
+                # call_llm_until retries (bypassing cache) if the free-tier
+                # backend returns something that isn't valid SQL or NO_QUERY --
+                # auto-routed free models occasionally leak a stray meta/safety
+                # line instead of the actual query even at temperature=0.
                 raw_sql = call_llm_until(
                     TEXT_TO_SQL_SYSTEM_PROMPT,
                     question,
+                    is_valid=lambda s: extract_sql(s).upper().startswith(("SELECT", "NO_QUERY")),
                     stop=(";",),
-                    max_tokens=300,
-                    validate=lambda text: validate_superlative_sql_direction(question, text)
-                    and validate_no_self_referential_case_filter(text)
-                    and validate_no_unreliable_wheelchair_query(text)
-                    and validate_no_raw_category_delay_count_ranking(text)
-                    and validate_on_time_uses_delay_severity(question, text)
-                    and validate_station_ranking_has_min_sample(text)
-                    and validate_no_query_reason_matches_question(question, text)
-                    and validate_station_query_matches_question_stations(question, text),
+                    max_tokens=SQL_MAX_TOKENS,
                 )
                 sql = extract_sql(raw_sql)
-                # Deterministic safety net: call_llm_until gives up after
-                # max_attempts and returns the last invalid result rather
-                # than raising, so a weak model can still fail these checks
-                # on every retry. Force a safe NO_QUERY fallback rather than
-                # let a tautological or unreliable-column query execute.
-                sql = force_no_query_if_unreliable_wheelchair(sql)
-                sql = force_no_query_if_self_referential_case(sql)
-                sql = force_no_query_if_raw_category_delay_count_ranking(sql)
-                sql = force_no_query_if_on_time_wrong_definition(question, sql)
-                sql = force_no_query_if_station_ranking_unreliable(sql)
-                sql = force_reason_mismatch_worst_best_station(question, sql)
-            except LLMConnectionError as e:
-                answer = f"🔌 **Can't reach the LLM backend.** {e}"
-                outcome = "llm_error"
-                status.update(label="Connection error", state="error")
-
-            if outcome is None and sql.upper().startswith("NO_QUERY"):
-                reason = sql.split(":", 1)[-1].strip()
-                answer = f"I can't answer that with the data I have access to. {reason}"
-                outcome = "no_query"
-                sql = None
-                status.update(label="No matching data for this question", state="complete")
-
-            # --- Step 2: run the query ---
-            if outcome is None:
-                status.update(label="Querying the database...")
-                try:
-                    rows = execute_query(sql)
-                except ValueError as e:
-                    answer = f"⛔ That query was blocked by safety guardrails: {e}"
-                    outcome = "blocked"
-                    status.update(label="Query blocked", state="error")
-
-            # --- Step 3: consultant explanation ---
-            if outcome is None:
-                status.update(label="Preparing your answer...")
-                try:
-                    consultant_input = (
-                        f"Question: {question}\n"
-                        f"SQL executed: {sql}\n"
-                        f"Results: {rows[:20]}"
-                    )
-                    answer = call_llm_until(
-                        CONSULTANT_SYSTEM_PROMPT,
-                        consultant_input,
-                        max_tokens=150,
-                        validate=lambda text: validate_consultant_numbers(text, rows)
-                        and validate_no_false_generalization(text, rows)
-                        and validate_no_invented_entities(text, rows),
-                    )
-                    answer = correct_consultant_numbers(answer, rows)
-                    answer = correct_consultant_generalization(answer, rows)
-                    answer = correct_no_invented_entities(answer, rows)
-                    answer = auto_fix_superlative_claims(answer, rows)
-                    answer = auto_fix_misdirected_recommendation(answer, rows)
-                    answer = strip_ungrounded_time_reference(answer, sql)
-                    answer = strip_invented_cause(answer)
-                    answer = strip_recommendation_after_unavailability_disclaimer(answer)
-                    answer = replace_vague_period_with_dates(answer, sql)
-                    outcome = "ok"
-                    status.update(label="Done", state="complete")
-                except LLMConnectionError as e:
-                    answer = f"🔌 **Can't reach the LLM backend.** {e}"
-                    outcome = "llm_error_step2"
-                    status.update(label="Connection error", state="error")
-
-        # --- Display, outside the status widget so errors/warnings stay
-        # visible in the chat instead of being tucked inside a collapsed
-        # status container. Each branch mirrors the original code exactly. ---
-        if outcome == "llm_error":
+                sql_by = llm_client.LAST_ANSWERED_BY
+        except LLMConnectionError as e:
+            answer = f"🔌 **Can't reach the LLM backend.** {e}"
             st.error(answer)
             st.session_state.messages.append(
                 {"role": "assistant", "content": answer, "sql": None, "rows": None}
             )
             st.stop()
 
-        elif outcome == "no_query":
+        if sql.upper().startswith("NO_QUERY"):
+            reason = sql.split(":", 1)[-1].strip()
+            answer = f"I can't answer that with the data I have access to. {reason}"
             st.warning(answer)
             st.session_state.messages.append(
                 {"role": "assistant", "content": answer, "sql": None, "rows": None}
             )
-
-        elif outcome == "blocked":
-            st.error(answer)
-            st.session_state.messages.append(
-                {"role": "assistant", "content": answer, "sql": sql, "rows": None}
-            )
-
-        elif outcome == "llm_error_step2":
-            st.error(answer)
-            st.session_state.messages.append(
-                {"role": "assistant", "content": answer, "sql": sql, "rows": rows}
-            )
-            st.stop()
-
-        elif outcome == "ok":
-            st.markdown(answer)
-
-            with st.expander("🔎 SQL query used"):
-                st.code(sql, language="sql")
-                st.download_button(
-                    "⬇️ Download SQL",
-                    data=sql,
-                    file_name=f"railpulse_query_{len(st.session_state.messages)}.sql",
-                    mime="text/plain",
-                    key=f"sql_dl_new_{len(st.session_state.messages)}",
+        else:
+            try:
+                with st.spinner("Querying the database..."):
+                    rows = execute_query(sql)
+            except ValueError as e:
+                answer = f"⛔ That query was blocked by safety guardrails: {e}"
+                st.error(answer)
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": answer, "sql": sql, "rows": None}
                 )
-
-            if rows:
-                df = pd.DataFrame(rows)
-                with st.expander(f"📊 Raw data ({len(df)} rows)"):
-                    st.dataframe(df, use_container_width=True)
-                    csv_buffer = io.StringIO()
-                    df.to_csv(csv_buffer, index=False)
-                    st.download_button(
-                        "⬇️ Download CSV",
-                        data=csv_buffer.getvalue(),
-                        file_name=f"railpulse_results_{len(st.session_state.messages)}.csv",
-                        mime="text/csv",
-                        key=f"csv_dl_new_{len(st.session_state.messages)}",
+            else:
+                # --- Step 2: consultant explanation ---
+                try:
+                    with st.spinner("Preparing your answer..."):
+                        consultant_input = build_consultant_input(question, sql, rows)
+                        answer = call_llm_until(
+                            CONSULTANT_SYSTEM_PROMPT,
+                            consultant_input,
+                            is_valid=lambda s: not looks_like_leaked_meta(s)
+                            and not ungrounded_figures(s, consultant_input),
+                            max_tokens=CONSULTANT_MAX_TOKENS,
+                        )
+                        # call_llm_until() returns its last attempt even if
+                        # still invalid; say so rather than hide it.
+                        ungrounded = ungrounded_figures(answer, consultant_input)
+                except LLMConnectionError as e:
+                    answer = f"🔌 **Can't reach the LLM backend.** {e}"
+                    st.error(answer)
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": answer, "sql": sql, "rows": rows}
                     )
+                    st.stop()
 
-            st.session_state.messages.append(
-                {"role": "assistant", "content": answer, "sql": sql, "rows": rows}
-            )
+                if ungrounded:
+                    answer += (
+                        "\n\n⚠️ *Check against the raw data: this answer contains figures not found "
+                        f"in the query results ({', '.join(ungrounded)}).*"
+                    )
+                st.markdown(answer)
+                answered_by = _answered_by(sql_by, llm_client.LAST_ANSWERED_BY)
+                if answered_by:
+                    st.caption(answered_by)
+
+                n = len(st.session_state.messages)
+                _render_sql_and_data(sql, rows, file_index=n, key_suffix=f"new_{n}")
+
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": answer, "sql": sql, "rows": rows, "answered_by": answered_by}
+                )

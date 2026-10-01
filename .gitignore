@@ -3,5 +3,18 @@ __pycache__/
 *.pyc
 .env
 *.log
-data/*.csv/
-.streamlit
+
+.env
+
+# Local Claude Code instructions and personal notes: never commit
+CLAUDE.md
+claude-legacy-memory.md
+claude_general.md
+
+# Raw CSV exports (liveboard_records.csv is ~300 MB, over GitHub's file limit);
+# the app reads data/railpulse_ai.db, rebuilt with scripts/build_database.py
+data/*.csv
+
+.streamlit/secrets.toml
+.pytest_cache/
+.venv-*/

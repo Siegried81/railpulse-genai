@@ -30,56 +30,53 @@ DATE_COLUMNS_BY_TABLE = {
     "liveboard_records": ["Scheduled Date"],
 }
 
-# The GTFS-Realtime poller re-captures the same still-upcoming train STOP on
-# every poll cycle, so a single (vehicle_id, Scheduled Date, station_id) can
-# appear hundreds of times in the raw export (up to ~950x observed).
-# We keep only the freshest observation per train/date/station, using
-# pulled_at as the recency signal.
+# liveboard_records is built from continuous GTFS-Realtime polling of station
+# liveboards: the same still-upcoming stop gets re-captured on every polling
+# cycle until the train leaves that station, so raw rows massively
+# over-represent stops that stay "upcoming" longer (980,868 raw rows for
+# 99,014 distinct stop events). Left as-is, every aggregate (AVG delay,
+# on-time %, station rankings, etc.) is skewed toward whichever stops
+# happened to get polled most, not toward real-world frequency.
 #
-# CRITICAL: station_id MUST be part of this key. vehicle_id identifies a
-# single train JOURNEY (e.g. Munich -> Brussels), not a single stop -- the
-# same vehicle_id legitimately appears multiple times for the SAME
-# Scheduled Date, once per station it stops at along the route. Without
-# station_id in the dedup key, all of a multi-stop train's real, distinct
-# stops collapse into a single row (whichever station happened to have the
-# latest pulled_at across the WHOLE journey), silently discarding every
-# other station that same train legitimately passed through that day.
-
-DEDUP_KEYS_BY_TABLE = {
-    "liveboard_records": {
-        "subset": ["vehicle_id", "Scheduled Date", "station_id"],
-        "recency_col": "pulled_at",
-    },
+# The unit of measurement is one STOP EVENT: one train at one station on one
+# date. The key therefore includes station_id. Keying on (vehicle_id,
+# Scheduled Date) alone would keep a single station per train per day (the
+# last one polled) and silently drop ~87% of real stop events, so every
+# station-level figure would only see the station where each train happened
+# to be polled last.
+#
+# Within a stop event, keep the LATEST snapshot by pulled_at: the final poll
+# before the train leaves the station is the most complete delay reading.
+DEDUP_KEY_BY_TABLE = {
+    "liveboard_records": (["vehicle_id", "station_id", "Scheduled Date"], "pulled_at"),
 }
 
 
-def _deduplicate(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
-    dedup_cfg = DEDUP_KEYS_BY_TABLE.get(table_name)
-    if not dedup_cfg:
-        return df
+# Timestamp format of the Power BI export (French locale), e.g. "07/08/2026 04:15"
+# is 7 August, not 8 July.
+EXPORT_DATETIME_FORMAT = "%d/%m/%Y %H:%M"
 
-    subset = dedup_cfg["subset"]
-    recency_col = dedup_cfg["recency_col"]
 
-    if not all(col in df.columns for col in subset + [recency_col]):
-        print(f"   ⚠️  Skipping dedup for '{table_name}': expected columns missing")
-        return df
+def keep_latest_snapshot(df: pd.DataFrame, group_cols: list[str], sort_col: str) -> pd.DataFrame:
+    """Keep one row per group_cols: the one with the latest sort_col timestamp.
 
-    before = len(df)
+    Separate from build_database() so the dedup rule (which defines what one
+    row of liveboard_records means) can be tested on a small frame without
+    reading the real CSVs.
 
-    # Parse pulled_at to a sortable datetime (best-effort; unparseable
-    # values sort first via NaT so they lose ties to real timestamps)
-    sort_key = pd.to_datetime(df[recency_col], errors="coerce")
-    df = df.assign(_sort_key=sort_key)
-    df = df.sort_values("_sort_key", ascending=False)
-    df = df.drop_duplicates(subset=subset, keep="first")
-    df = df.drop(columns=["_sort_key"])
-
-    after = len(df)
-    print(f"   🧹 Deduplicated on {subset} (kept latest '{recency_col}'): "
-          f"{before:,} -> {after:,} rows ({before - after:,} duplicates removed)")
-
-    return df
+    sort_col is parsed with the export's explicit day-first format. Without
+    it, pandas guesses the format from the first value: an ambiguous one like
+    "01/08/2026" is read month-first, every day above 12 then fails to parse,
+    and those NaT rows sort last -- so they would be kept as the "latest"
+    snapshot whatever their real time.
+    """
+    sort_dt = pd.to_datetime(df[sort_col], format=EXPORT_DATETIME_FORMAT, errors="coerce")
+    return (
+        df.assign(_sort_dt=sort_dt)
+        .sort_values("_sort_dt")
+        .drop_duplicates(subset=group_cols, keep="last")
+        .drop(columns="_sort_dt")
+    )
 
 
 def build_database() -> None:
@@ -100,7 +97,7 @@ def build_database() -> None:
 
         for col in DATE_COLUMNS_BY_TABLE.get(table_name, []):
             if col in df.columns:
-                parsed = pd.to_datetime(df[col], format="%d/%m/%Y %H:%M", errors="coerce")
+                parsed = pd.to_datetime(df[col], format=EXPORT_DATETIME_FORMAT, errors="coerce")
                 still_missing = parsed.isna()
                 if still_missing.any():
                     parsed.loc[still_missing] = pd.to_datetime(
@@ -111,38 +108,16 @@ def build_database() -> None:
                 if n_failed:
                     print(f"   ⚠️  {n_failed} rows in '{col}' could not be parsed as a date")
 
-        df = _deduplicate(df, table_name)
-
-        # trips.trip_id sometimes carries a trailing ":<variant>" suffix
-        # (e.g. ":1", ":2") to disambiguate repeated identical services,
-        # which liveboard_records.vehicle_id never has. A direct
-        # vehicle_id = trip_id join therefore silently misses ~13% of
-        # rows. Add a normalized column with that suffix stripped, so
-        # queries can join on lr.vehicle_id = t.trip_base_id instead.
-
-        if table_name == "trips" and "trip_id" in df.columns:
-            df["trip_base_id"] = df["trip_id"].str.replace(
-                r"(:\d{8}):\d+$", r"\1", regex=True
-            )
-
-            # trip_base_id collapses multiple trip_id variants (":1", ":2"...)
-            # into one value, so it is NOT unique in this table -- joining
-            # liveboard_records on it (instead of the original trip_id) would
-            # silently multiply rows (one liveboard row matching several
-            # trips rows), inflating any downstream AVG()/COUNT(). Sanity
-            # check that route_id is consistent across variants of the same
-            # base trip then collapse to one row per trip_base_id so the join stays 1:1.
-            
-            route_id_per_base = df.groupby("trip_base_id")["route_id"].nunique()
-            inconsistent = (route_id_per_base > 1).sum()
-            if inconsistent:
-                print(f"   ⚠️  {inconsistent} trip_base_id value(s) map to more than one "
-                      f"route_id -- taking the first seen for each (data may be imprecise)")
-
-            before_trips = len(df)
-            df = df.drop_duplicates(subset=["trip_base_id"], keep="first")
-            print(f"   🧹 Deduplicated 'trips' on trip_base_id (variants collapsed): "
-                  f"{before_trips:,} -> {len(df):,} rows")
+        if table_name in DEDUP_KEY_BY_TABLE:
+            group_cols, sort_col = DEDUP_KEY_BY_TABLE[table_name]
+            if all(c in df.columns for c in group_cols) and sort_col in df.columns:
+                before = len(df)
+                df = keep_latest_snapshot(df, group_cols, sort_col)
+                after = len(df)
+                print(
+                    f"   🧹 Deduplicated '{table_name}' on {group_cols} (kept latest "
+                    f"'{sort_col}' per group): {before:,} -> {after:,} rows"
+                )
 
         df.to_sql(table_name, conn, if_exists="replace", index=False)
 

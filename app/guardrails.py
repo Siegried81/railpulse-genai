@@ -39,8 +39,8 @@ KNOWN_COLUMNS = {
     "name", "stations names", "latitude", "longitude", "wheelchair_boarding",
     "location_type", "route_id", "route_short_name", "route_long_name",
     "route_desc", "route_color", "route_text_color", "route_type",
-    "route_url", "agency_id", "train_category", "trip_id", "trip_base_id",
-    "vehicle_type", "direction",
+    "route_url", "agency_id", "train_category", "trip_id", "vehicle_type",
+    "direction",
 }
 
 
