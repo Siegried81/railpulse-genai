@@ -174,3 +174,22 @@ counts as grounded.
 "this morning", and `"Hour" 12` (12:00–12:59) is afternoon. Live result:
 2.16 min on 2026-08-07 06:00–11:59, where the old query gave 2.88 min over all
 dates, 06:00–12:59.
+
+---
+
+## 2026-10-10 — A query has a time budget, not only a row cap
+
+**What.** `app/db.py::execute_query` installs a SQLite progress handler that
+interrupts the statement after `MAX_QUERY_SECONDS` (5 s). The error names the
+budget and says what to do (narrow the question, add a LIMIT).
+
+**Why.** `fetchmany(MAX_ROWS)` bounds what comes back, not the work SQLite does
+to produce it: a cartesian join or an unindexed aggregate over the 980,868
+polling rows runs to completion before the first row is fetched, and the
+read-only connection does nothing against that. A Text-to-SQL model writes
+such a query sooner or later. Measured in the suite: a four-way self-join on
+the fixture table is stopped within the budget; a normal `COUNT(*)` is
+untouched.
+
+**Revisit if** a legitimate question needs more than 5 s on the real
+database — raise the constant, or pre-aggregate that question into a view.

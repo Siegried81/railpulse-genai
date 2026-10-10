@@ -5,6 +5,7 @@ data/railpulse_ai.db.
 """
 
 import sqlite3
+import time
 
 import pytest
 
@@ -73,3 +74,24 @@ def test_connection_is_read_only_even_without_guardrails(tiny_db):
             conn.execute("DELETE FROM liveboard_records")
     finally:
         conn.close()
+
+
+def test_a_runaway_query_is_interrupted_within_the_budget(tiny_db, monkeypatch):
+    """MAX_ROWS bounds the result, not the work: a cartesian self-join of the
+    polling table runs to completion before the first row is fetched. The
+    progress handler stops it at the deadline and the error says what to do."""
+    monkeypatch.setattr(db, "MAX_QUERY_SECONDS", 0.05)
+    monkeypatch.setattr(db, "_PROGRESS_EVERY_N_OPS", 100)
+    cartesian = (
+        "SELECT COUNT(*) FROM liveboard_records a, liveboard_records b, "
+        "liveboard_records c, liveboard_records d"
+    )
+    started = time.monotonic()
+    with pytest.raises(ValueError, match="budget"):
+        db.execute_query(cartesian)
+    assert time.monotonic() - started < 2.0, "the interrupt did not fire near the deadline"
+
+
+def test_a_normal_query_is_not_affected_by_the_budget(tiny_db):
+    rows = db.execute_query("SELECT COUNT(*) AS n FROM liveboard_records")
+    assert rows[0]["n"] == db.MAX_ROWS + 10

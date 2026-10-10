@@ -8,6 +8,7 @@ any write at the driver level regardless of what SQL text gets through.
 
 import sqlite3
 import logging
+import time
 from pathlib import Path
 from app import config
 from app.guardrails import validate_query
@@ -19,6 +20,15 @@ logging.basicConfig(
 )
 
 MAX_ROWS = 500  # hard cap, regardless of what the LLM's SQL asks for
+# Wall-clock budget for one query. MAX_ROWS bounds what comes back, not the
+# work SQLite does to produce it: a cartesian join or an unindexed aggregate
+# over the million-row polling table runs to completion before fetchmany sees
+# a single row. The progress handler below interrupts it instead.
+MAX_QUERY_SECONDS = 5.0
+# How many SQLite virtual-machine instructions run between two deadline checks.
+# Small enough that a runaway query is stopped within milliseconds of the
+# deadline, large enough that the check costs nothing on a normal query.
+_PROGRESS_EVERY_N_OPS = 10_000
 
 
 def get_connection() -> sqlite3.Connection:
@@ -50,6 +60,10 @@ def execute_query(sql: str) -> list[dict]:
         raise ValueError(f"Query blocked by guardrails: {reason}")
 
     conn = get_connection()
+    deadline = time.monotonic() + MAX_QUERY_SECONDS
+    # A non-zero return from the handler makes SQLite abort the running
+    # statement with "interrupted", which lands in the OperationalError branch.
+    conn.set_progress_handler(lambda: time.monotonic() > deadline, _PROGRESS_EVERY_N_OPS)
     try:
         cursor = conn.execute(sql)
         rows = [dict(row) for row in cursor.fetchmany(MAX_ROWS)]
@@ -57,6 +71,12 @@ def execute_query(sql: str) -> list[dict]:
         return rows
     except sqlite3.OperationalError as e:
         # Catches any residual write attempt too: read-only DB raises here
+        if time.monotonic() > deadline:
+            logging.info(f"TIMEOUT | budget_s={MAX_QUERY_SECONDS} | sql={sql!r}")
+            raise ValueError(
+                f"Query execution failed: exceeded the {MAX_QUERY_SECONDS:g} s budget - "
+                "narrow the question (a station, a day) or add a LIMIT"
+            )
         logging.info(f"DB_ERROR | error={e} | sql={sql!r}")
         raise ValueError(f"Query execution failed: {e}")
     finally:
