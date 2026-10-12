@@ -1,0 +1,24 @@
+// VS Code debug configurations: attach to the containers started with
+//   docker compose -f docker-compose.yml -f docker-compose.debug.yml up --build
+// pathMappings: this folder on the PC is /app in the container, so breakpoints match.
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Docker: attach Streamlit (5678)",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": {
+        "host": "localhost",
+        "port": 5678
+      },
+      "pathMappings": [
+        {
+          "localRoot": "${workspaceFolder}",
+          "remoteRoot": "/app"
+        }
+      ],
+      "justMyCode": true
+    }
+  ]
+}
