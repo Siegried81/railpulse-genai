@@ -1,0 +1,24 @@
+# Debug override: the same services, started under debugpy so VS Code can attach.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.debug.yml up --build
+#   then VS Code -> Run and Debug -> "Docker: attach ..." (F5), breakpoints work.
+#
+# Why an override and not debugpy in requirements.txt: requirements.txt goes into
+# the published image, and an open debugpy port lets anyone who reaches it run
+# Python inside the container. Here debugpy exists only while debugging:
+#   - installed at start into /tmp/debug (works for the non-root user, image unchanged),
+#     version read from requirements-dev.txt so it is pinned in one place;
+#   - debug ports bound to 127.0.0.1: reachable from this PC only;
+#   - source mounted on /app: edit, restart the service, no rebuild.
+# Plain `docker compose up` never reads this file.
+
+services:
+  railpulse:
+    # Streamlit: attach on 127.0.0.1:5678
+    command: >-
+      sh -c "pip install --quiet --no-cache-dir --target /tmp/debug $$(grep -i '^debugpy' requirements-dev.txt)
+      && PYTHONPATH=/tmp/debug:$${PYTHONPATH:-} exec python -m debugpy --listen 0.0.0.0:5678 -m streamlit run app/streamlit_app.py --server.headless=true --server.address=0.0.0.0"
+    ports:
+      - "127.0.0.1:5678:5678"
+    volumes:
+      - .:/app
