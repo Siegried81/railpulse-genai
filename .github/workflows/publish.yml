@@ -1,0 +1,135 @@
+name: publish images
+
+# Builds every image listed in the matrix below, starts it, checks that its UI or
+# API actually answers, and only then pushes it to two registries:
+#
+#   - GitHub Container Registry: ghcr.io/siegried81/<image>
+#     Uses the built-in GITHUB_TOKEN, so it works with zero setup.
+#   - Docker Hub: docker.io/<DOCKERHUB_USERNAME>/<image>
+#     Only when the repo has the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets;
+#     without them the Docker Hub steps are skipped and GHCR still publishes.
+#
+# This file is the same in every project; only the `matrix.include` list changes.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]          # `git tag v1.0.0 && git push --tags` -> :1.0.0 and :1
+  workflow_dispatch:      # manual "Run workflow" button in the Actions tab
+
+# Read the checkout, write the GHCR package. Nothing else.
+permissions:
+  contents: read
+  packages: write
+
+# A newer push to the same ref makes the running publish obsolete.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false    # one broken image must not block the others
+      matrix:
+        # image      : published name (lowercase)
+        # dockerfile : path from the repo root; the build context is always the root
+        # target     : multi-stage target, "" for the last stage
+        # port/health: what the smoke test calls once the container is up
+        include:
+          - { image: railpulse-genai, dockerfile: Dockerfile, target: "", port: 8501, health: /_stcore/health }
+    env:
+      # Copied into env so `if:` can test it (secrets cannot be read in `if:`).
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Buildx is required for the GitHub Actions layer cache below.
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Tags, as on official images: `latest` + exact version + major version,
+      # plus the short commit SHA so any image traces back to its code.
+      # The Docker Hub line renders empty (and is ignored) without the secret.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/siegried81/${{ matrix.image }}
+            ${{ env.DOCKERHUB_USERNAME != '' && format('docker.io/{0}/{1}', env.DOCKERHUB_USERNAME, matrix.image) || '' }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}
+
+      # Build once and load it locally, so the smoke test runs on the exact
+      # image that gets pushed: never publish an image nobody has started.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          load: true
+          tags: smoke:local
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      # Start the container with its own CMD and wait up to 60 s for an HTTP 200.
+      # No .env and no API key: the UI must at least boot without secrets.
+      - name: smoke test
+        run: |
+          docker run -d --name smoke -p ${{ matrix.port }}:${{ matrix.port }} smoke:local
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${{ matrix.port }}${{ matrix.health }}"; then
+              echo; echo "smoke test passed"; exit 0
+            fi
+            sleep 2
+          done
+          echo "no answer on ${{ matrix.health }} after 60 s"; docker logs smoke; exit 1
+
+      # Known HIGH/CRITICAL CVEs in the image, the way official images are
+      # scanned on Docker Hub. Report only (exit-code 0): a CVE in the base
+      # image is fixed by a rebuild, not by blocking the publish.
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: smoke:local
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+
+      # Push the real tags. Every layer is already in the cache, so this is an
+      # upload, not a second build.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+
+      # Docker Hub page text, taken from DOCKERHUB.md (the README is too long
+      # for Hub's 25 kB limit). Needs a token with Read/Write/Delete scope;
+      # continue-on-error so a description problem never fails a good publish.
+      - if: env.DOCKERHUB_USERNAME != '' && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKERHUB_USERNAME }}/${{ matrix.image }}
+          readme-filepath: ./DOCKERHUB.md

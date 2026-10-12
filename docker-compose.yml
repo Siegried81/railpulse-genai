@@ -1,6 +1,9 @@
 services:
   railpulse:
     build: .
+    # build + image: `docker compose up --build` builds from source and tags it with the
+    # Docker Hub name; `docker compose pull` downloads the published image instead.
+    image: ${DOCKERHUB_USERNAME:-siegried}/railpulse-genai:latest
     container_name: railpulse-ai
     ports:
       - "8501:8501"
@@ -10,8 +13,10 @@ services:
       - ./.streamlit:/app/.streamlit
     # env_file loads the API keys from the local, gitignored .env
     # (see .env.example for the variable names).
+    # Optional: someone who pulled the image has no .env, and the UI must still start.
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       # Values here OVERRIDE the same keys in .env: the container always runs
       # on Groq (faster and more reliable than a CPU-only Ollama), whatever
