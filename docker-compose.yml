@@ -6,7 +6,9 @@ services:
     image: ${DOCKERHUB_USERNAME:-siegried}/railpulse-genai:latest
     container_name: railpulse-ai
     ports:
-      - "8501:8501"
+      # Host port: each app has its own, so all of them can run at once.
+      # Override with UI_PORT in .env; the app still listens on 8501 inside.
+      - "${UI_PORT:-8503}:8501"
     volumes:
       - ./data:/app/data
       - ./reports:/app/reports
