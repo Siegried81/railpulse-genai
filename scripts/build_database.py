@@ -8,20 +8,24 @@ Expects CSVs in data/ and writes data/railpulse_ai.db
 """
 
 import sqlite3
+import sys
 import pandas as pd
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+# `python scripts/build_database.py` puts only scripts/ on sys.path; add the
+# repo root so the table list can come from app.guardrails.
+sys.path.insert(0, str(BASE_DIR))
+
+from app.guardrails import KNOWN_TABLES  # noqa: E402
+
 RAW_CSV_DIR = BASE_DIR / "data"
 DB_PATH = BASE_DIR / "data" / "railpulse_ai.db"
 
-TABLES = {
-    "liveboard_records": "liveboard_records.csv",
-    "stations": "stations.csv",
-    "routes": "routes.csv",
-    "trips": "trips.csv",
-    "vehicles": "vehicles.csv",
-}
+# One table per CSV export, named after the file. The names come from
+# KNOWN_TABLES so the database and the guardrails' table allow-list can
+# never drift apart.
+TABLES = {name: f"{name}.csv" for name in KNOWN_TABLES}
 
 # Date columns that need conversion from French DD/MM/YYYY text to
 # proper ISO 8601 (YYYY-MM-DD), so SQLite's MIN/MAX/comparisons and date

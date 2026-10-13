@@ -6,9 +6,14 @@ event), so these tests pin it: one row per train per station per date, the
 latest poll wins, and day-first export timestamps are read as day-first.
 """
 
-import pandas as pd
+import sqlite3
+from pathlib import Path
 
-from build_database import DEDUP_KEY_BY_TABLE, keep_latest_snapshot
+import pandas as pd
+import pytest
+
+from app.guardrails import KNOWN_TABLES
+from build_database import DEDUP_KEY_BY_TABLE, TABLES, keep_latest_snapshot
 
 
 def _dedup(df: pd.DataFrame) -> pd.DataFrame:
@@ -68,3 +73,22 @@ def test_pulled_at_is_parsed_day_first():
     out = _dedup(df)
     assert len(out) == 1
     assert out.iloc[0]["delay_seconds"] == 120
+
+
+def test_tables_built_are_exactly_the_guardrails_allow_list():
+    """build_database derives its tables from KNOWN_TABLES, and the committed
+    database must hold those tables and nothing else, or the allow-list
+    would block a real table (or allow a missing one)."""
+    assert tuple(TABLES) == KNOWN_TABLES
+
+    db_path = Path(__file__).resolve().parent.parent / "data" / "railpulse_ai.db"
+    if not db_path.exists():
+        pytest.skip("data/railpulse_ai.db not present")
+    conn = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)
+    try:
+        names = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        )}
+    finally:
+        conn.close()
+    assert names == set(KNOWN_TABLES)
