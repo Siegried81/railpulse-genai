@@ -1,0 +1,33 @@
+name: tests
+
+# Runs the offline pytest suite on every push and pull request.
+# No secrets are needed: tests/conftest.py blocks the network and fakes the
+# API keys, so a test that forgets to mock an LLM call fails here.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same Python as the Dockerfile (python:3.11-slim).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      - run: python -m pytest -q

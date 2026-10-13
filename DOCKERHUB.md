@@ -41,7 +41,7 @@ them at run time with `-e NAME=value` or `--env-file .env` (see `.env.example` i
 
 ## Volumes
 
-- `/app/data`: SQLite database
+- `/app/data`: SQLite database (a copy ships in the image; mount a folder here only to use your own `railpulse_ai.db`)
 - `/app/reports`: generated weekly reports
 
 ## License

@@ -95,3 +95,45 @@ def test_a_runaway_query_is_interrupted_within_the_budget(tiny_db, monkeypatch):
 def test_a_normal_query_is_not_affected_by_the_budget(tiny_db):
     rows = db.execute_query("SELECT COUNT(*) AS n FROM liveboard_records")
     assert rows[0]["n"] == db.MAX_ROWS + 10
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # SQLite internals: schema disclosure
+        "SELECT name FROM sqlite_master",
+        "SELECT sql FROM sqlite_schema WHERE type = 'table'",
+        "SELECT * FROM stations, sqlite_master",
+        "SELECT sqlite_version()",
+        # memory exhaustion in a single VM step, before the time budget can stop it
+        "SELECT randomblob(900000000) FROM stations",
+        "SELECT ZEROBLOB (900000000) FROM stations",
+        "SELECT printf('%.*c', 1000000000, 'x') FROM stations",
+        "SELECT load_extension('/tmp/evil.so')",
+        # tables outside the allow-list
+        "SELECT * FROM weather",
+        "SELECT * FROM liveboard_records lr JOIN users u ON lr.vehicle_id = u.id",
+        "SELECT * FROM json_each('[1,2]')",
+    ],
+)
+def test_internals_dangerous_functions_and_unknown_tables_are_blocked(sql):
+    is_safe, reason = validate_query(sql)
+    assert not is_safe
+    assert reason
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        (
+            "SELECT r.train_category, AVG(lr.delay_seconds) FROM liveboard_records lr "
+            "JOIN vehicles v ON lr.vehicle_id = v.vehicle_id "
+            "JOIN trips t ON lr.vehicle_id = t.trip_id "
+            "JOIN routes r ON t.route_id = r.route_id GROUP BY r.train_category"
+        ),
+        "SELECT COUNT(*) FROM (SELECT station_id FROM liveboard_records GROUP BY station_id)",
+        "SELECT name FROM Stations",
+    ],
+)
+def test_joins_and_subqueries_on_known_tables_pass(sql):
+    assert validate_query(sql) == (True, "")
