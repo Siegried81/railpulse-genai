@@ -103,7 +103,7 @@ jobs:
       # Known HIGH/CRITICAL CVEs in the image, the way official images are
       # scanned on Docker Hub. Report only (exit-code 0): a CVE in the base
       # image is fixed by a rebuild, not by blocking the publish.
-      - uses: aquasecurity/trivy-action@0.28.0
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: smoke:local
           severity: HIGH,CRITICAL
