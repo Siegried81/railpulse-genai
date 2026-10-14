@@ -12,6 +12,7 @@ free Ollama option.
 - **Duration:** 5 days
 - **Stack:** Python, SQLite, Streamlit, LLM via DeepSeek (paid API), Groq or OpenRouter (free tiers), or Ollama (local)
 - **Data source:** exported from my RailPulse Power BI dashboard (Sprint 3), itself fed by my Azure ingestion pipeline (Sprint 2)
+- **Power BI dashboard:** [`powerbi/railpulse.pbix`](powerbi/railpulse.pbix), the same 99,014 stop events as the SQLite database, with Explorer and Station Drill-down pages (slicers, category → route → station and day → hour drill-downs). Source project, queries and data: [railpulse_power-bi](https://github.com/Siegried81/railpulse_power-bi)
 
 ## Features
 
