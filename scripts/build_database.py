@@ -61,6 +61,28 @@ DEDUP_KEY_BY_TABLE = {
 EXPORT_DATETIME_FORMAT = "%d/%m/%Y %H:%M"
 
 
+def restore_planned_time(df: pd.DataFrame) -> pd.DataFrame:
+    """Rewrite scheduled_time as the timetable time and re-derive Hour from it.
+
+    In the export, scheduled_time moves with the delay: the same stop reads
+    08:05 with 0 s of delay, then 08:06 with 60 s. The timetable time is
+    therefore scheduled_time - delay_seconds, and Hour, day_of_week and
+    day_number are cut on it. Left on the drifting value, a late train slides
+    into the next hour and the delay decides which hour it is counted in.
+    """
+    shown = pd.to_datetime(df["scheduled_time"], format=EXPORT_DATETIME_FORMAT, errors="coerce")
+    planned = shown - pd.to_timedelta(df["delay_seconds"].fillna(0), unit="s")
+    out = df.copy()
+    out["scheduled_time"] = planned.dt.strftime(EXPORT_DATETIME_FORMAT).where(planned.notna(), df["scheduled_time"])
+    if "Hour" in out.columns:
+        out["Hour"] = planned.dt.hour.where(planned.notna(), df["Hour"])
+    if "day_of_week" in out.columns:
+        out["day_of_week"] = planned.dt.day_name().where(planned.notna(), df["day_of_week"])
+    if "day_number" in out.columns:
+        out["day_number"] = (planned.dt.dayofweek + 1).where(planned.notna(), df["day_number"])
+    return out
+
+
 def keep_latest_snapshot(df: pd.DataFrame, group_cols: list[str], sort_col: str) -> pd.DataFrame:
     """Keep one row per group_cols: the one with the latest sort_col timestamp.
 
@@ -111,6 +133,9 @@ def build_database() -> None:
                 n_failed = df[col].isna().sum()
                 if n_failed:
                     print(f"   ⚠️  {n_failed} rows in '{col}' could not be parsed as a date")
+
+        if table_name == "liveboard_records":
+            df = restore_planned_time(df)
 
         if table_name in DEDUP_KEY_BY_TABLE:
             group_cols, sort_col = DEDUP_KEY_BY_TABLE[table_name]

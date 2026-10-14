@@ -193,3 +193,32 @@ untouched.
 
 **Revisit if** a legitimate question needs more than 5 s on the real
 database — raise the constant, or pre-aggregate that question into a view.
+
+---
+
+## 2026-10-14 — scheduled_time and Hour are the timetable time, not the drifting one
+
+**What.** `scripts/build_database.py` now rewrites `scheduled_time` as
+`scheduled_time - delay_seconds` and re-derives `Hour`, `day_of_week` and
+`day_number` from it, before the dedup.
+
+**Why.** In the Power BI export `scheduled_time` moves with the delay: one stop
+reads 08:05 with 0 s, then 08:06 with 60 s. `Hour` was cut on that moving value,
+so a late train slid into the next hour and its own delay decided which hour it
+was counted in. Measured on the 99,014 stop events: 3,205 (3.2%) had an `Hour`
+different from their timetable hour.
+
+**What changed in the numbers** (before → after, rebuilt DB):
+
+| Figure | Before | After |
+|---|---|---|
+| Stop events | 99,014 | 99,014 (same keys, same delays) |
+| Rows whose `Hour` differs from the timetable hour | 3,205 | 0 |
+| On-time rate (< 2 min), all data | 72.24% | 72.24% |
+| Delayed stops in the worst hour (15h) | 4,710 | 4,718 |
+
+Every hour-based answer ("this morning", "busiest hour") can move by the
+stops that changed hour; station, date and delay figures do not change.
+
+**Revisit if.** A future export carries the timetable time in its own column:
+use it instead of subtracting the delay.
