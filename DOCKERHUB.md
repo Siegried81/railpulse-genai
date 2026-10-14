@@ -35,7 +35,7 @@ them at run time with `-e NAME=value` or `--env-file .env` (see `.env.example` i
 
 | Variable | Purpose |
 |---|---|
-| `LLM_PROVIDER` | `deepseek`, `groq`, `openrouter`, `anthropic` or `ollama` |
+| `LLM_PROVIDER` | `auto` (DeepSeek, then Groq), `deepseek`, `groq`, `openrouter`, `anthropic` or `ollama`; the compose file forces `groq` |
 | `DEEPSEEK_API_KEY / GROQ_API_KEY / ...` | key for the chosen provider |
 | `DB_PATH` | SQLite database path, default `data/railpulse_ai.db` |
 

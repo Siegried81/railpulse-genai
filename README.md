@@ -2,8 +2,9 @@
 
 I built an on-call Railway Operations Assistant that lets station managers ask natural-language
 questions about Belgian rail delays and get SQL-backed answers with tactical recommendations —
-powered by DeepSeek's API by default, with Groq's free tier as automatic fallback and a fully
-local, free Ollama option.
+powered by Groq's free tier by default (`LLM_PROVIDER=groq`), or DeepSeek's API first with Groq
+as automatic fallback when `LLM_PROVIDER=auto` (the `.env.example` setting), and a fully local,
+free Ollama option.
 
 ## Overview
 
