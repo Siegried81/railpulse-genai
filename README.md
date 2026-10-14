@@ -2,8 +2,9 @@
 
 I built an on-call Railway Operations Assistant that lets station managers ask natural-language
 questions about Belgian rail delays and get SQL-backed answers with tactical recommendations —
-powered by DeepSeek's API by default, with Groq's free tier as automatic fallback and a fully
-local, free Ollama option.
+powered by Groq's free tier by default (`LLM_PROVIDER=groq`), or DeepSeek's API first with Groq
+as automatic fallback when `LLM_PROVIDER=auto` (the `.env.example` setting), and a fully local,
+free Ollama option.
 
 ## Overview
 
@@ -20,7 +21,7 @@ local, free Ollama option.
 - **Automatic unit conversion**: delays are stored in seconds; I convert them to minutes for all human-facing output.
 - **Provider-agnostic LLM client**: I can switch between Ollama (local), Groq, OpenRouter (hosted free tiers) or DeepSeek with a single environment variable — no code changes — or use `auto` (DeepSeek, then Groq with key rotation). Includes caching, stop-sequence tuning, truncation detection, and clean error messages if a backend is unreachable.
 - **Chat UI**: sidebar with one-click example questions, SQL and CSV export on every answer, and an SNCB-inspired navy/grey theme.
-- **Automated weekly executive brief**: `scripts/generate_weekly_report.py` pulls the week's top delay anomalies, on-time rate, and worst-performing station straight from the database, then has the LLM write a grounded Markdown report to `reports/`. Every figure in the report — and in every consultant answer — is checked against the numbers the LLM was given; an answer with an invented or derived figure is regenerated, and flagged if it still fails.
+- **Automated weekly executive brief**: `scripts/generate_weekly_report.py` pulls the week's top delay anomalies, on-time rate, and worst-performing station straight from the database, then has the LLM write a grounded Markdown report to `reports/`. Every figure in the report — and in every consultant answer — is checked against the numbers the LLM was given; an answer with an invented or derived figure is regenerated; if it still fails, the UI flags it and the brief is not written.
 
 ## Setup
 
@@ -28,7 +29,7 @@ local, free Ollama option.
 
 ```bash
 git clone <repo-url>
-cd railpulse-genai-challenge
+cd railpulse-genai
 python -m venv .venv
 .venv\Scripts\Activate.ps1   # Windows
 pip install -r requirements.txt
@@ -36,13 +37,15 @@ pip install -r requirements.txt
 
 ### 2. Build the database
 
-Place your exported CSVs in `data/`, then run:
+The repo already ships `data/railpulse_ai.db`, so this step is only needed to rebuild it from your own
+export. Place the exported CSVs (`liveboard_records.csv`, `stations.csv`, `routes.csv`, `trips.csv`,
+`vehicles.csv`) in `data/`, then run:
 
 ```bash
 python scripts/build_database.py
 ```
 
-This creates `data/railpulse_ai.db`.
+This deletes and recreates `data/railpulse_ai.db`.
 
 ### 3. Configure your LLM provider
 
@@ -77,7 +80,7 @@ GROQ_API_KEY_2=optional_second_key
 GROQ_MODEL=openai/gpt-oss-120b
 ```
 Each Groq key has its own tokens-per-minute quota (8K on the free tier, and one Text-to-SQL call
-is ~2.3K prompt tokens), so extra keys `GROQ_API_KEY_2`, `_3`, … are rotated through on a rate limit.
+is ~3.4K prompt tokens), so extra keys `GROQ_API_KEY_2`, `_3`, … are rotated through on a rate limit.
 
 **Option D — Auto (DeepSeek first, Groq as fallback)**
 ```
