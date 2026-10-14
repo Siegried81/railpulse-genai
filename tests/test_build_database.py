@@ -92,3 +92,34 @@ def test_tables_built_are_exactly_the_guardrails_allow_list():
     finally:
         conn.close()
     assert names == set(KNOWN_TABLES)
+
+
+def test_planned_time_is_rebuilt_from_the_drifting_export_time():
+    """08:05 on time and 08:06 with 60 s are one stop planned at 08:05."""
+    from build_database import restore_planned_time
+
+    df = pd.DataFrame({
+        "scheduled_time": ["04/08/2026 08:05", "04/08/2026 08:06"],
+        "delay_seconds": [0, 60],
+        "Hour": [8, 8],
+        "day_of_week": ["Tuesday", "Tuesday"],
+        "day_number": [2, 2],
+    })
+    out = restore_planned_time(df)
+    assert out["scheduled_time"].tolist() == ["04/08/2026 08:05", "04/08/2026 08:05"]
+
+
+def test_a_late_train_stays_in_its_planned_hour():
+    from build_database import restore_planned_time
+
+    df = pd.DataFrame({
+        "scheduled_time": ["03/08/2026 00:04"],   # planned 23:58 on Sunday, 6 min late
+        "delay_seconds": [360],
+        "Hour": [0],
+        "day_of_week": ["Monday"],
+        "day_number": [1],
+    })
+    row = restore_planned_time(df).iloc[0]
+    assert row["Hour"] == 23
+    assert row["day_of_week"] == "Sunday"
+    assert row["day_number"] == 7
