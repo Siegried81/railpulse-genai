@@ -28,8 +28,11 @@ def _numbered_keys(name: str, environ=os.environ) -> list[str]:
 # --- LLM provider switch ------------------------------------------------
 # One of: "auto", "deepseek", "groq", "ollama", "openrouter", "anthropic".
 # "auto" tries AUTO_PROVIDER_ORDER in turn and uses the first that answers.
+# Groq leads because its free tier costs nothing; DeepSeek (paid credit) is the
+# first fallback, then the OpenRouter free tier, then a local Ollama as a last
+# resort. A provider with no key or no local server just raises and is skipped.
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq")
-AUTO_PROVIDER_ORDER = ("deepseek", "groq")
+AUTO_PROVIDER_ORDER = ("groq", "deepseek", "openrouter", "ollama")
 
 # --- DeepSeek (hosted, OpenAI-compatible) ---------------------------------
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")

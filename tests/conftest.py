@@ -43,7 +43,9 @@ def fake_llm_config(monkeypatch):
     from app import config
 
     monkeypatch.setattr(config, "LLM_PROVIDER", "groq")
-    monkeypatch.setattr(config, "AUTO_PROVIDER_ORDER", ("deepseek", "groq"))
+    # AUTO_PROVIDER_ORDER is left at its real default so test_auto_provider_order_default
+    # can pin it. The aggregation tests that would otherwise fall through to the
+    # unmocked OpenRouter/Ollama hosts narrow it to ("groq", "deepseek") themselves.
     monkeypatch.setattr(config, "DEEPSEEK_API_KEY", "test-deepseek")
     monkeypatch.setattr(config, "DEEPSEEK_BASE_URL", "https://deepseek.test")
     monkeypatch.setattr(config, "DEEPSEEK_MODEL", "deepseek-flash")
