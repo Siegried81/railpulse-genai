@@ -4,8 +4,8 @@ Provider-agnostic LLM client.
 call_llm(system_prompt, user_prompt) always returns a plain string,
 regardless of which backend is configured in config.LLM_PROVIDER.
 With LLM_PROVIDER="auto", providers are tried in config.AUTO_PROVIDER_ORDER
-(DeepSeek, then Groq with key rotation); LAST_ANSWERED_BY and the audit log
-record which one actually answered.
+(Groq with key rotation, then DeepSeek, then OpenRouter, then a local Ollama);
+LAST_ANSWERED_BY and the audit log record which one actually answered.
 
 Speed optimizations:
 - `stop` sequences let the generation halt as soon as the model finishes

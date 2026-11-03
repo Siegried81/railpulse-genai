@@ -1,7 +1,7 @@
 """
 Tests for provider selection in app/llm_client.py: the "auto" chain
-(DeepSeek, then Groq), Groq key rotation, the gpt-oss payload, and the record
-of which provider actually answered. Every HTTP call is mocked.
+(Groq first, then DeepSeek), Groq key rotation, the gpt-oss payload, and the
+record of which provider actually answered. Every HTTP call is mocked.
 """
 
 import pytest
@@ -30,30 +30,38 @@ def routed_post(monkeypatch):
     return replies, calls
 
 
-def test_auto_uses_deepseek_first(monkeypatch, routed_post):
+def test_auto_provider_order_default():
+    # The free Groq tier leads; paid DeepSeek, then the OpenRouter free tier,
+    # then a local Ollama, are the fallbacks. Pinned here because the behaviour
+    # tests below run on a two-provider subset (only two hosts are mocked).
+    assert config.AUTO_PROVIDER_ORDER == ("groq", "deepseek", "openrouter", "ollama")
+
+
+def test_auto_uses_groq_first(monkeypatch, routed_post):
     monkeypatch.setattr(config, "LLM_PROVIDER", "auto")
     replies, calls = routed_post
-    replies["deepseek"].append(FakeResponse(200, OK))
-
-    assert call_llm("sys", "user") == "SELECT 1;"
-    assert [c[0] for c in calls] == ["deepseek"]
-    assert llm_client.LAST_ANSWERED_BY == "deepseek · deepseek-flash"
-
-
-@pytest.mark.parametrize("status", [402, 429, 500])
-def test_auto_falls_back_to_groq_when_deepseek_fails(monkeypatch, routed_post, status):
-    monkeypatch.setattr(config, "LLM_PROVIDER", "auto")
-    replies, calls = routed_post
-    replies["deepseek"].append(FakeResponse(status))
     replies["groq"].append(FakeResponse(200, OK))
 
     assert call_llm("sys", "user") == "SELECT 1;"
-    assert [c[0] for c in calls] == ["deepseek", "groq"]
+    assert [c[0] for c in calls] == ["groq"]
     assert llm_client.LAST_ANSWERED_BY == "groq · openai/gpt-oss-120b"
+
+
+@pytest.mark.parametrize("status", [402, 429, 500])
+def test_auto_falls_back_to_deepseek_when_groq_fails(monkeypatch, routed_post, status):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "auto")
+    replies, calls = routed_post
+    replies["groq"].append(FakeResponse(status))
+    replies["deepseek"].append(FakeResponse(200, OK))
+
+    assert call_llm("sys", "user") == "SELECT 1;"
+    assert [c[0] for c in calls] == ["groq", "deepseek"]
+    assert llm_client.LAST_ANSWERED_BY == "deepseek · deepseek-flash"
 
 
 def test_auto_raises_rate_limit_only_when_every_provider_is_rate_limited(monkeypatch, routed_post):
     monkeypatch.setattr(config, "LLM_PROVIDER", "auto")
+    monkeypatch.setattr(config, "AUTO_PROVIDER_ORDER", ("groq", "deepseek"))
     replies, _ = routed_post
     replies["deepseek"].append(FakeResponse(429))
     replies["groq"].append(FakeResponse(429))
@@ -64,6 +72,7 @@ def test_auto_raises_rate_limit_only_when_every_provider_is_rate_limited(monkeyp
 
 def test_auto_raises_connection_error_when_a_failure_is_not_a_rate_limit(monkeypatch, routed_post):
     monkeypatch.setattr(config, "LLM_PROVIDER", "auto")
+    monkeypatch.setattr(config, "AUTO_PROVIDER_ORDER", ("groq", "deepseek"))
     replies, _ = routed_post
     replies["deepseek"].append(FakeResponse(402))
     replies["groq"].append(FakeResponse(429))
@@ -157,15 +166,15 @@ def test_truncated_answer_is_an_error_not_a_result(routed_post):
         call_llm("sys", "user", max_tokens=700)
 
 
-def test_auto_falls_back_when_deepseek_answer_is_truncated(monkeypatch, routed_post):
+def test_auto_falls_back_when_groq_answer_is_truncated(monkeypatch, routed_post):
     monkeypatch.setattr(config, "LLM_PROVIDER", "auto")
     replies, calls = routed_post
     cut = {"choices": [{"message": {"content": "# Brief"}, "finish_reason": "length"}]}
-    replies["deepseek"].append(FakeResponse(200, cut))
-    replies["groq"].append(FakeResponse(200, OK))
+    replies["groq"].append(FakeResponse(200, cut))
+    replies["deepseek"].append(FakeResponse(200, OK))
 
     assert call_llm("sys", "user") == "SELECT 1;"
-    assert llm_client.LAST_ANSWERED_BY.startswith("groq")
+    assert llm_client.LAST_ANSWERED_BY.startswith("deepseek")
 
 
 def test_empty_content_is_returned_as_empty_string(routed_post):

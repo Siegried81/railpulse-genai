@@ -222,3 +222,35 @@ stops that changed hour; station, date and delay figures do not change.
 
 **Revisit if.** A future export carries the timetable time in its own column:
 use it instead of subtracting the delay.
+
+---
+
+## 2026-11-02 — auto chain leads with free Groq, then DeepSeek, OpenRouter, Ollama
+
+**What.** `config.AUTO_PROVIDER_ORDER` changed from `("deepseek", "groq")` to
+`("groq", "deepseek", "openrouter", "ollama")`. `.env` stays on
+`LLM_PROVIDER=auto`.
+
+**Why.** `auto` tried DeepSeek first, so every call spent DeepSeek credit while
+the Groq free tier sat unused. Groq now answers first; DeepSeek is the first
+fallback, then the OpenRouter free tier, then a local Ollama. A provider with
+no key or no local server raises `LLMConnectionError` and is skipped, so adding
+OpenRouter and Ollama costs nothing when they are not configured.
+
+**What changed in the numbers.** No data figure moves. Which model answers
+changes: `LAST_ANSWERED_BY` now reads `groq · openai/gpt-oss-120b` on the normal
+path instead of DeepSeek. Tests: 84 → 85 passed (added
+`test_auto_provider_order_default`; the 2 pre-existing `test_streamlit_app`
+failures are the `AppTest` socket block under this interpreter, green in the
+Windows `.venv`).
+
+**Known edge.** With OpenRouter and Ollama in the chain but unconfigured, a run
+where Groq and DeepSeek are both rate-limited (429) ends as a plain
+`LLMConnectionError` rather than `LLMRateLimitError`, because the unreachable
+OpenRouter/Ollama raise a non-rate-limit error last. So `call_llm_until()` does
+not do its 5 s rate-limit backoff in that case. Acceptable while those two are
+last-resort fallbacks.
+
+**Revisit if.** DeepSeek credit is exhausted for good (drop it from the chain),
+or an OpenRouter key / local Ollama is added and should be reflected in the
+`.env` comments and README.

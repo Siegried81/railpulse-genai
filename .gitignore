@@ -14,3 +14,10 @@ data/*.csv
 .streamlit/secrets.toml
 .pytest_cache/
 .venv-*/
+
+# Power BI Project (PBIP) text export: dozens of generated JSON files that
+# duplicate the tracked binary dashboard powerbi/railpulse.pbix. Keep the .pbix,
+# ignore the exploded project folders.
+powerbi/railpulse.Report/
+powerbi/railpulse.SemanticModel/
+powerbi/railpulse.pbip

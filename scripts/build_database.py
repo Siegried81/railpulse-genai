@@ -38,9 +38,16 @@ DATE_COLUMNS_BY_TABLE = {
 # liveboards: the same still-upcoming stop gets re-captured on every polling
 # cycle until the train leaves that station, so raw rows massively
 # over-represent stops that stay "upcoming" longer (980,868 raw rows for
-# 99,014 distinct stop events). Left as-is, every aggregate (AVG delay,
-# on-time %, station rankings, etc.) is skewed toward whichever stops
-# happened to get polled most, not toward real-world frequency.
+# 99,014 distinct stop events, ~10 captures each). Left as-is, every aggregate
+# (AVG delay, on-time %, station rankings, etc.) is skewed toward whichever
+# stops happened to get polled most, not toward real-world frequency.
+#
+# On top of that, the export stores most polls twice: for a given
+# (stop event, pulled_at) the usual case is two rows identical in every field
+# but record_id (439,681 of the duplicated polls, 439,654 byte-identical; only
+# 27 carry a different scheduled_time/delay_seconds). This is why raw-row
+# counts per stop event cluster on even numbers. The dedup below collapses both
+# effects at once, so neither biases the kept figures.
 #
 # The unit of measurement is one STOP EVENT: one train at one station on one
 # date. The key therefore includes station_id. Keying on (vehicle_id,
