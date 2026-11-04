@@ -222,7 +222,7 @@ I load 5 tables into SQLite from my Power BI export:
 - **Direction-level data** is empty for all records; questions about direction are declined rather than answered with guessed data.
 - **Cancellation data** (`canceled`) is 0/False for effectively all records — the source GTFS-Realtime feed doesn't reliably report cancellations, so a "0 canceled trains" answer reflects a feed limitation, not necessarily a perfect on-time record. The assistant caveats this explicitly.
 - **Wheelchair accessibility data** is unpopulated for virtually all stations in this feed.
-- **The model decides the decimals, not me.** Every figure is grounded (`ungrounded_figures` checks it exists in the rows the model was handed), but display rounding is the model's call — `rows_in_minutes()` passes full precision, so the same average reads `4.42` on one model and `4.426991…` on another. Cosmetic, not a wrong number; more in [`docs/deep-dive.md`](docs/deep-dive.md).
+- **The model decides the decimals, not me.** Every figure is grounded (`ungrounded_figures` checks it exists in the rows the model was handed), but display rounding is the model's call. The SQL converts to minutes itself (`AVG(delay_seconds) / 60.0 AS avg_delay_minutes`), and `rows_in_minutes()` only rounds columns still in *seconds*, so that already-minutes value reaches the model at full precision — the same average reads `4.42` on one model and `4.426991…` on another. Cosmetic, not a wrong number; more in [`docs/deep-dive.md`](docs/deep-dive.md).
 
 ## Author
 
