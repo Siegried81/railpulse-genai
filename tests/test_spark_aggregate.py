@@ -63,8 +63,7 @@ def test_key_matches_the_reference_pin():
 
 def test_constants_match_build_database():
     """Key, sort column and timestamp format must equal build_database.py's, so
-    the Spark collapse and the pandas pipeline can't drift (claude_general.md
-    section 8: derive constraints from the source of truth, don't restate them).
+    the Spark collapse and the pandas pipeline can't drift.
     """
     import build_database as bd
 
@@ -124,6 +123,23 @@ def test_pulled_at_is_parsed_day_first(spark):
     out = _collapse(spark, rows).collect()
     assert len(out) == 1
     assert out[0]["delay_seconds"] == 120
+
+
+def test_unparseable_pulled_at_never_wins(spark):
+    # A garbage pulled_at parses to null and sorts last, so the good poll wins
+    # even though the garbage row comes later in the input. This is where the
+    # Spark collapse differs from the pandas one (NaT sorts last there and
+    # keep="last" takes it); the docstring of keep_latest_snapshot says so.
+    rows = [
+        {"vehicle_id": "T1", "station_id": "S_A", "Scheduled Date": "2026-08-05",
+         "pulled_at": "05/08/2026 08:00", "delay_seconds": 60},
+        {"vehicle_id": "T1", "station_id": "S_A", "Scheduled Date": "2026-08-05",
+         "pulled_at": "not a timestamp", "delay_seconds": 999},
+    ]
+    out = _collapse(spark, rows).collect()
+    assert len(out) == 1
+    assert out[0]["pulled_at"] == "05/08/2026 08:00"
+    assert out[0]["delay_seconds"] == 60
 
 
 def test_output_schema_equals_input_schema(spark):
