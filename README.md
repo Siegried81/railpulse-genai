@@ -13,6 +13,7 @@ free Ollama option.
 - **Stack:** Python, SQLite, Streamlit, LLM via DeepSeek (paid API), Groq or OpenRouter (free tiers), or Ollama (local)
 - **Data source:** exported from my RailPulse Power BI dashboard (Sprint 3), itself fed by my Azure ingestion pipeline (Sprint 2)
 - **Power BI dashboard:** [`powerbi/railpulse.pbix`](powerbi/railpulse.pbix), the same 99,014 stop events as the SQLite database, with Explorer and Station Drill-down pages (slicers, category → route → station and day → hour drill-downs). Source project, queries and data: [railpulse_power-bi](https://github.com/Siegried81/railpulse_power-bi)
+- **Live demo:** [Streamlit](https://railpulse-genai.streamlit.app/) · [Render](https://railpulse-genai-1.onrender.com/) — both free tier, so the first hit after they've been idle takes ~50s to wake up.
 
 ## Features
 
@@ -100,6 +101,12 @@ record which provider and model actually answered.
 python -m streamlit run app/streamlit_app.py
 ```
 (Using `python -m streamlit` rather than the bare `streamlit` command avoids a `ModuleNotFoundError: No module named 'app'` some environments hit.)
+
+## Deployment
+
+Live off `main` on [Streamlit Community Cloud](https://railpulse-genai.streamlit.app/) and [Render](https://railpulse-genai-1.onrender.com/), both free tier. On Render it runs as a **Python** service, not from the `Dockerfile` — that image pins Streamlit to 8501, and Render serves on `$PORT`. Keys live in each platform's dashboard, never in the repo. The app is open to anyone with the link, so it spends my Groq quota; `RAILPULSE_API_KEY` only guards the JSON API in `api/`, which isn't deployed here.
+
+The full walkthrough — exact start command, the Docker trap, what that API key really does, and why the same average prints different decimals — is in [`docs/deep-dive.md`](docs/deep-dive.md).
 
 ## Project Structure
 
@@ -190,6 +197,7 @@ I load 5 tables into SQLite from my Power BI export:
 - **Direction-level data** is empty for all records; questions about direction are declined rather than answered with guessed data.
 - **Cancellation data** (`canceled`) is 0/False for effectively all records — the source GTFS-Realtime feed doesn't reliably report cancellations, so a "0 canceled trains" answer reflects a feed limitation, not necessarily a perfect on-time record. The assistant caveats this explicitly.
 - **Wheelchair accessibility data** is unpopulated for virtually all stations in this feed.
+- **The model decides the decimals, not me.** Every figure is grounded (`ungrounded_figures` checks it exists in the rows the model was handed), but display rounding is the model's call — `rows_in_minutes()` passes full precision, so the same average reads `4.42` on one model and `4.426991…` on another. Cosmetic, not a wrong number; more in [`docs/deep-dive.md`](docs/deep-dive.md).
 
 ## Author
 
