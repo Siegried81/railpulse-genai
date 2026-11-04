@@ -1,12 +1,9 @@
 -r requirements.txt
 pytest
 
-# fastapi.testclient.TestClient runs its requests through httpx, and importing
-# it raises if httpx is absent. Bare fastapi doesn't depend on httpx, so without
-# this line a fresh install (CI) errors out while collecting the suite. Pinned
-# to the version the dev venv uses; starlette now prefers httpx2 but still
-# accepts httpx, and pytest here doesn't turn that deprecation warning into an
-# error. (Moving to httpx2 would drop the warning but isn't needed for CI.)
+# fastapi.testclient needs httpx and bare fastapi doesn't pull it in, so a fresh CI
+# install failed at collection. Pinned to the dev venv's version. starlette now
+# prefers httpx2; the deprecation warning is harmless here.
 httpx==0.28.1
 
 # VS Code debugger, used by docker-compose.debug.yml

@@ -1,17 +1,13 @@
 """JSON API over the RailPulse AI text-to-SQL + consultant pipeline.
 
-Why it exists: the Streamlit chat app is the interactive surface; this gives the
-same pipeline a plain HTTP surface so other services (or the other repos' React
-UIs, which expect a `GET /api/health` and a `POST /ask`) can ask a question and
-get back the answer, the SQL, the rows and who answered. It is additive: it does
-not change how the Streamlit app behaves.
+The Streamlit app is the chat surface. This is the same pipeline over plain
+HTTP, for other services and front ends that expect GET /api/health and
+POST /ask. It changes nothing in the Streamlit app.
 
-Both surfaces call the one function `app.engine.answer_question`, so they cannot
-drift. Every safety property of the pipeline is kept here by construction, since
-nothing in this file re-implements it: one structured LLM call per step and no
-agent loop, the read-only DB plus `validate_query` guardrails inside
-`execute_query`, the `ungrounded_figures` check on the answer (returned as
-`ungrounded`), and `LAST_ANSWERED_BY` recorded as `sql_by` / `answer_by`.
+Both surfaces call app.engine.answer_question, so they can't drift. Nothing
+here re-implements a guardrail: one LLM call per step, the read-only DB and
+validate_query inside execute_query, the ungrounded_figures check (returned as
+`ungrounded`), and LAST_ANSWERED_BY as sql_by / answer_by.
 
 Outcome mapping:
 - a normal answer, and a NO_QUERY verdict (the model declining because the data
@@ -53,6 +49,11 @@ app = FastAPI(title="RailPulse AI API", version="1.0")
 # vars are set, so local dev and the test suite are unaffected.
 _RATE_WINDOW_SECONDS = 60
 _rate_hits: dict[str, deque] = defaultdict(deque)
+# Every client IP that ever called gets a key. An accepted call prunes its own
+# deque, but an IP that never comes back is only cleaned by the sweep below,
+# which runs every _RATE_SWEEP_EVERY accepted calls.
+_RATE_SWEEP_EVERY = 1000
+_rate_calls = 0
 
 
 def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
@@ -60,9 +61,31 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
 
     config.API_KEY unset = open (local dev): the check is skipped. On a public
     deploy you set RAILPULSE_API_KEY and callers must send `X-API-Key`.
+
+    Both sides are compared as utf-8 bytes: hmac.compare_digest raises
+    TypeError on a non-ASCII str, and Starlette decodes headers as latin-1, so
+    a raw `X-API-Key: é` would otherwise be a 500 instead of a 401.
     """
-    if config.API_KEY and not hmac.compare_digest(x_api_key or "", config.API_KEY):
+    if config.API_KEY and not hmac.compare_digest(
+        (x_api_key or "").encode("utf-8"), config.API_KEY.encode("utf-8")
+    ):
         raise HTTPException(status_code=401, detail="missing or invalid API key")
+
+
+def _prune_hits(hits: deque, now: float) -> None:
+    """Drop the timestamps in `hits` that fell out of the sliding window."""
+    while hits and now - hits[0] >= _RATE_WINDOW_SECONDS:
+        hits.popleft()
+
+
+def _sweep_rate_hits(now: float) -> None:
+    """Delete every client whose last hit is older than the window."""
+    stale = [
+        ip for ip, hits in _rate_hits.items()
+        if not hits or now - hits[-1] >= _RATE_WINDOW_SECONDS
+    ]
+    for ip in stale:
+        del _rate_hits[ip]
 
 
 def rate_limit(request: Request) -> None:
@@ -70,18 +93,24 @@ def rate_limit(request: Request) -> None:
 
     A sliding 60-second window: drop timestamps older than the window, then 429
     once the client already has RATE_LIMIT_PER_MINUTE in it. Off (no limit) at 0.
+    A rejected hit isn't recorded. Every _RATE_SWEEP_EVERY accepted calls the
+    idle clients are swept, so the store doesn't grow with every IP that ever
+    called.
     """
+    global _rate_calls
     limit = config.RATE_LIMIT_PER_MINUTE
     if limit <= 0:
         return
     ip = request.client.host if request.client else "unknown"
     now = time.monotonic()
     hits = _rate_hits[ip]
-    while hits and now - hits[0] >= _RATE_WINDOW_SECONDS:
-        hits.popleft()
+    _prune_hits(hits, now)
     if len(hits) >= limit:
         raise HTTPException(status_code=429, detail="rate limit exceeded; slow down")
     hits.append(now)
+    _rate_calls += 1
+    if _rate_calls % _RATE_SWEEP_EVERY == 0:
+        _sweep_rate_hits(now)
 
 
 if not config.API_KEY:

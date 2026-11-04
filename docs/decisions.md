@@ -324,9 +324,13 @@ the suite and the new API tests. Only `fastapi` and `uvicorn` (already present)
 are app runtime deps and are pinned in `requirements.txt`; `pytest`/`httpx` are
 test-only and, like the pre-existing `pytest`, are not listed there.
 
+httpx is pinned in requirements-dev.txt since 36b6e4a.
+
 **Revisit if.** The reference environment is rebuilt: re-pin `requirements.txt`
 to whatever Python/venv is then authoritative, and reconcile the `CLAUDE.md`
 "3.11.9" note with reality.
+
+Follow-up (2026-11-04). The `CLAUDE.md` named above isn't in this repository. What the repo does pin is Python 3.11: the Dockerfile (`python:3.11-slim`) and CI (`.github/workflows/ci.yml:26`). The local venv is 3.14.7.
 
 ---
 
@@ -364,3 +368,64 @@ acts as a near-global cap rather than per-caller — key on `X-Forwarded-For`
 only with a known trusted-proxy hop count. A wrong-key 401 short-circuits
 before the limiter, so invalid-key attempts aren't throttled; fine for cost
 (a 401 makes no LLM call) but it allows brute-force.
+
+Follow-up (2026-11-04). `_rate_hits` kept one key per client IP forever. Now every 1,000 accepted calls it drops the clients whose last hit is older than the window; the 429 rule and the "rejected hits aren't recorded" rule are unchanged. Revisit if a deploy sees more than a few thousand distinct IPs a minute: then 1,000 calls between sweeps is too many keys to hold, so sweep on a timer instead. Same day, `require_api_key` compares the key as utf-8 bytes: `hmac.compare_digest` raises on a non-ASCII str, and Starlette decodes headers as latin-1, so a raw `X-API-Key: é` was a 500 instead of a 401.
+
+---
+
+## 2026-11-04 — Offline red-team suite, plus an opt-in live probe
+
+**What.** `tests/test_red_team.py` (46 tests, commit 0e404e1) attacks the
+guardrails directly: SQL injection through `validate_query` and the read-only
+connection as a second layer, prompt-leak detection with
+`looks_like_leaked_meta`, the `ungrounded_figures` check, and an end-to-end
+engine probe with a mocked model. `scripts/red_team.py` runs the same ideas
+against the real LLM and DB; it needs both `--run-live` and
+`RAILPULSE_LIVE_REDTEAM=1`, otherwise it prints how to run and exits. No
+product code changed.
+
+**Why.** The suite already proved the happy path. Nothing proved the
+deterministic defenses hold when the input is hostile. The live probe exists
+because model output varies: it's a thing you read, not a gate, and it spends
+quota, so it's gated twice and not collected by pytest.
+
+**What changed in the numbers.** No data figure moves. Tests 102 → 148.
+
+**Known limit.** `looks_like_leaked_meta` doesn't catch a long verbatim dump of
+the text-to-SQL system prompt; a test pins that boundary. The real defenses are
+the prompt-level instruction and the fact that the consultant call never sees
+the text-to-SQL prompt, only its own system prompt plus the question, SQL and
+rows.
+
+**Revisit if.** The heuristic is strengthened (the pinned test will move), or a
+live probe ever shows an invented figure getting past `ungrounded_figures`.
+
+---
+
+## 2026-11-04 — PySpark mirror of the snapshot-to-event collapse
+
+**What.** `scripts/spark_aggregate.py` (commit 90f6133) reproduces
+`build_database.py::keep_latest_snapshot` with the Spark DataFrame API, in
+local mode: one row per `(vehicle_id, station_id, Scheduled Date)`, latest
+`pulled_at` wins, day-first timestamp parse. `pyspark` is an optional extra in
+`requirements-spark.txt` and needs Java; `tests/test_spark_aggregate.py` skips
+when either is missing. The pandas pipeline is untouched and stays the
+reference.
+
+**Why.** Show the same 980,868 → 99,014 reduction in Spark, next to the
+pandas one, without making the app depend on a JVM.
+
+**What changed in the numbers.** No data figure moves; the shipped database is
+still built by pandas. One rule differs: pandas keeps an unparseable
+`pulled_at` as the latest poll (NaT sorts last, `keep="last"` takes it); the
+Spark version never does (`desc_nulls_last`). On the 99,014 rows shipped it
+makes no difference, every kept row has a `dd/MM/yyyy HH:mm` `pulled_at`.
+The script was first described as able to run on a cluster; `build_spark`
+hard-codes `local[*]`, so the docstrings now say local mode. Spark pins the
+tie-break on two polls with the same timestamp (later input row wins); pandas
+doesn't guarantee it.
+
+**Revisit if.** An export ever ships rows with a bad `pulled_at`: decide which
+rule is right and make the other side match. Or the collapse really has to run
+on a cluster: then `build_spark` takes a master URL and the CSV read needs a
+schema.
