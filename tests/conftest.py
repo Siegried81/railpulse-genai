@@ -23,10 +23,24 @@ from app import llm_client  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    def _blocked(*args, **kwargs):
+    """Block real network, but allow loopback.
+
+    The point is that an unmocked provider call fails loudly instead of spending
+    free-tier quota; every provider lives on an external host, so those stay
+    blocked. Loopback is allowed because FastAPI's TestClient needs a self-pipe
+    socket to run the app in-process (on Windows it connects over 127.0.0.1),
+    and a loopback socket reaches no provider.
+    """
+    real_connect = socket.socket.connect
+    loopback = {"127.0.0.1", "::1", "localhost"}
+
+    def _guarded(self, address, *args, **kwargs):
+        host = address[0] if isinstance(address, tuple) else None
+        if host in loopback:
+            return real_connect(self, address, *args, **kwargs)
         raise RuntimeError("Network access is forbidden in tests; mock requests.post instead.")
 
-    monkeypatch.setattr(socket.socket, "connect", _blocked)
+    monkeypatch.setattr(socket.socket, "connect", _guarded)
 
 
 @pytest.fixture(autouse=True)

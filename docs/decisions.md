@@ -254,3 +254,113 @@ last-resort fallbacks.
 **Revisit if.** DeepSeek credit is exhausted for good (drop it from the chain),
 or an OpenRouter key / local Ollama is added and should be reflected in the
 `.env` comments and README.
+
+---
+
+## 2026-11-04 — JSON API over the pipeline, sharing one `answer_question`
+
+**What.** Added a FastAPI app in `api/main.py` (`GET /api/health`,
+`GET /api/config`, `POST /ask`) and extracted the text-to-SQL + consultant
+pipeline out of the Streamlit page into `app/engine.py::answer_question`. The
+Streamlit page now calls that function instead of running the steps inline, so
+the UI and the API share one path. Additive: no pipeline behaviour changed.
+`fastapi==0.162.0` and `uvicorn==0.54.0` added to `requirements.txt`.
+Launch: `python -m uvicorn api.main:app --host 0.0.0.0 --port 8003`.
+
+**Why.** The API needed the same steps the UI runs. Two copies of a pipeline
+with safety checks drift; one function cannot. Every guardrail is kept by
+construction (one LLM call per step, read-only DB + `validate_query`,
+`ungrounded_figures` on the answer, `LAST_ANSWERED_BY` recorded). The API maps
+`LLMConnectionError` → 503 and the guardrail/timeout `ValueError` → 422; a
+NO_QUERY verdict is a normal 200 with `no_query: true` and null `sql`/`rows`.
+
+**What changed in the numbers.** No data figure moves. One visible UI change:
+the three stage-specific spinners ("Translating...", "Querying...",
+"Preparing...") became one ("Working on your answer..."), because the three
+steps are now a single function call. The answer, SQL, table, captions,
+warnings and error messages are unchanged.
+
+**Behaviour kept exactly.** An `LLMConnectionError` raised after the SQL ran
+carries `.sql` and `.rows`, and the guardrail `ValueError` carries `.sql`, so
+the Streamlit history still shows the query (and rows) for those error cases as
+it did inline. The API ignores those attributes.
+
+**Tests.** 87 → 102 passed. Added `tests/test_engine.py` (6) and
+`tests/test_api.py` (9, one parametrized over two inputs). All LLM calls mocked at `requests.post`, the DB is a
+tiny temp SQLite file, no real network.
+
+**Revisit if.** A client needs the ungrounded caveat already folded into
+`answer` (it is returned raw plus the `ungrounded` list), or the API grows
+write/stateful endpoints (then it needs the auth the read-only endpoints don't).
+
+---
+
+## 2026-11-04 — tests allow loopback sockets so TestClient can run
+
+**What.** `tests/conftest.py::no_network` now allows connections to
+`127.0.0.1` / `::1` / `localhost` and blocks every other host, instead of
+blocking all `socket.connect`.
+
+**Why.** FastAPI's `TestClient` runs the app in-process and needs a self-pipe
+socket (on Windows it connects over loopback); the blanket block raised inside
+the client before any test code ran. Every LLM provider is an external host, so
+the "an unmocked provider call fails loudly instead of spending quota" guarantee
+is unchanged — loopback reaches no provider.
+
+**What changed in the numbers.** Nothing measured. Test-only change.
+
+**Revisit if.** A test ever needs to assert that a loopback call is blocked, or
+a provider is ever addressed over loopback (a local mock server) and should be
+caught instead of allowed.
+
+---
+
+## 2026-11-04 — note on the local `.venv`
+
+**What.** The `.venv` in this checkout is Python 3.14.7 (not the 3.11.9 that
+`CLAUDE.md` describes) and shipped without `pytest`, `fastapi`, `httpx` or
+`pydantic`. Installed `pytest`, `fastapi`, `httpx`, `pydantic` into it to run
+the suite and the new API tests. Only `fastapi` and `uvicorn` (already present)
+are app runtime deps and are pinned in `requirements.txt`; `pytest`/`httpx` are
+test-only and, like the pre-existing `pytest`, are not listed there.
+
+**Revisit if.** The reference environment is rebuilt: re-pin `requirements.txt`
+to whatever Python/venv is then authoritative, and reconcile the `CLAUDE.md`
+"3.11.9" note with reality.
+
+---
+
+## 2026-11-04 — optional API key + rate limit on the HTTP API
+
+**What.** `api/main.py` now protects `POST /ask` and `GET /api/config` with two
+opt-in checks, added for a planned Render deploy: an API key (header
+`X-API-Key` checked against `RAILPULSE_API_KEY`) and a per-client-IP rate limit
+(`RAILPULSE_RATE_LIMIT_PER_MINUTE`). `GET /api/health` stays open for the
+platform health check. Both config values live in `app/config.py`.
+
+**Why.** Each `/ask` is two LLM calls, so an open public endpoint lets anyone
+who finds the URL burn the project's Groq/DeepSeek quota. The key blocks
+anonymous traffic; the rate limit caps the damage from a leaked key or an
+abusive caller. The read-only DB + `validate_query` already cover the data
+side, so cost is the real risk.
+
+**Both off by default** (`RAILPULSE_API_KEY` unset = open, limit 0 = none), so
+local dev and the test suite behave exactly as before; you set the two env vars
+on Render to turn protection on.
+
+**No new dependency.** The rate limit is a small in-memory sliding window in
+`api/main.py` (stdlib only), not `slowapi` — enough for one uvicorn worker.
+
+**What changed in the numbers.** Test suite 148 → 153 passed (+5: health open
+with a key set, open without a key, 401 without/with a wrong key, 200 with the
+key, 429 past the cap). No existing test changed.
+
+**Revisit if.** The API runs behind more than one worker or instance: the
+in-memory window is per-process, so move it to a shared store (Redis) and
+reach for `slowapi`. Or if write/stateful endpoints are added: they need auth
+too, and probably per-key (not just per-IP) limits. Behind Render's proxy the
+limit keys on the proxy IP (`request.client.host`), not the real client, so it
+acts as a near-global cap rather than per-caller — key on `X-Forwarded-For`
+only with a known trusted-proxy hop count. A wrong-key 401 short-circuits
+before the limiter, so invalid-key attempts aren't throttled; fine for cost
+(a 401 makes no LLM call) but it allows brute-force.
