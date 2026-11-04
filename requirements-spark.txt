@@ -1,0 +1,9 @@
+# Optional extra for scripts/spark_aggregate.py only. The app (app/, scripts/
+# build_database.py, tests/) needs nothing here -- keep using requirements.txt
+# and requirements-dev.txt for those.
+#
+# PySpark also needs a Java runtime (JDK 8/11/17) on PATH; pip cannot install
+# Java. Without it, SparkSession creation fails and the Spark test skips.
+#
+#   pip install -r requirements-spark.txt
+pyspark>=3.5,<4.0
