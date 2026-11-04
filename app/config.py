@@ -58,3 +58,11 @@ OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
 
 # --- Database -------------------------------------------------------------
 DB_PATH = os.getenv("DB_PATH", "data/railpulse_ai.db")
+
+# ---- API protection (off by default; turn on for a public deploy, e.g. Render) ----
+# RAILPULSE_API_KEY unset means /ask and /api/config are open, as in local dev;
+# set it and those endpoints require the header `X-API-Key: <key>`.
+# RAILPULSE_RATE_LIMIT_PER_MINUTE 0 means no limit; a positive value caps requests
+# per client IP per minute. /api/health stays open so a platform health check works.
+API_KEY = os.getenv("RAILPULSE_API_KEY", "")
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RAILPULSE_RATE_LIMIT_PER_MINUTE", "0"))

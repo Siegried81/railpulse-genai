@@ -23,11 +23,19 @@ Outcome mapping:
 
 Run with:
     python -m uvicorn api.main:app --host 0.0.0.0 --port 8003
+
+Protection (off by default, for a public deploy): set RAILPULSE_API_KEY and
+callers must send `X-API-Key`; set RAILPULSE_RATE_LIMIT_PER_MINUTE to cap
+requests per client IP. /api/health stays open for a platform health check.
 """
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+import hmac
+import time
+from collections import defaultdict, deque
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app import config
@@ -35,6 +43,54 @@ from app.engine import answer_question
 from app.llm_client import LLMConnectionError
 
 app = FastAPI(title="RailPulse AI API", version="1.0")
+
+
+# ---- API protection (off by default; configured in app/config.py) -----------
+# In-memory sliding-window rate limit, keyed by client IP. Enough for one
+# uvicorn worker (the Render free tier); behind several workers or instances it
+# would need a shared store (e.g. Redis) and a library like slowapi -- noted in
+# docs/decisions.md. The key check and the limit are both off unless their env
+# vars are set, so local dev and the test suite are unaffected.
+_RATE_WINDOW_SECONDS = 60
+_rate_hits: dict[str, deque] = defaultdict(deque)
+
+
+def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
+    """Reject the request when an API key is configured and the header is wrong.
+
+    config.API_KEY unset = open (local dev): the check is skipped. On a public
+    deploy you set RAILPULSE_API_KEY and callers must send `X-API-Key`.
+    """
+    if config.API_KEY and not hmac.compare_digest(x_api_key or "", config.API_KEY):
+        raise HTTPException(status_code=401, detail="missing or invalid API key")
+
+
+def rate_limit(request: Request) -> None:
+    """Cap requests per client IP per minute when RATE_LIMIT_PER_MINUTE > 0.
+
+    A sliding 60-second window: drop timestamps older than the window, then 429
+    once the client already has RATE_LIMIT_PER_MINUTE in it. Off (no limit) at 0.
+    """
+    limit = config.RATE_LIMIT_PER_MINUTE
+    if limit <= 0:
+        return
+    ip = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    hits = _rate_hits[ip]
+    while hits and now - hits[0] >= _RATE_WINDOW_SECONDS:
+        hits.popleft()
+    if len(hits) >= limit:
+        raise HTTPException(status_code=429, detail="rate limit exceeded; slow down")
+    hits.append(now)
+
+
+if not config.API_KEY:
+    import logging
+
+    logging.getLogger("railpulse.api").warning(
+        "RAILPULSE_API_KEY is not set: /ask and /api/config are open. Set it "
+        "(and RAILPULSE_RATE_LIMIT_PER_MINUTE) before a public deploy."
+    )
 
 
 def _active_model() -> str:
@@ -70,13 +126,13 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.get("/api/config")
+@app.get("/api/config", dependencies=[Depends(require_api_key), Depends(rate_limit)])
 def get_config() -> dict:
     """Provider and model the API is running on, for a client badge. No keys."""
     return {"llm_provider": config.LLM_PROVIDER, "llm_model": _active_model()}
 
 
-@app.post("/ask")
+@app.post("/ask", dependencies=[Depends(require_api_key), Depends(rate_limit)])
 def ask(req: AskRequest) -> dict:
     """Answer one question through the shared pipeline.
 

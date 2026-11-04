@@ -161,3 +161,54 @@ def test_ask_end_to_end_through_real_engine(client, monkeypatch, tmp_path):
     ]
     assert body["ungrounded"] == []
     assert body["answer_by"] == "groq · openai/gpt-oss-120b"
+
+
+# --- API protection: off by default, on via env (for a public deploy) --------
+
+
+@pytest.fixture
+def _reset_rate_limit():
+    """Clear the in-memory rate-limit store around a test that turns it on."""
+    api._rate_hits.clear()
+    yield
+    api._rate_hits.clear()
+
+
+def test_health_stays_open_even_with_a_key_set(client, monkeypatch):
+    monkeypatch.setattr(config, "API_KEY", "secret")
+    assert client.get("/api/health").status_code == 200
+
+
+def test_ask_is_open_when_no_key_is_configured(client, monkeypatch):
+    # The default: no key set -> the endpoint answers without a header (local dev).
+    monkeypatch.setattr(config, "API_KEY", "")
+    monkeypatch.setattr(api, "answer_question", lambda q: _result())
+    assert client.post("/ask", json={"question": "Delays at Gouvy?"}).status_code == 200
+
+
+def test_ask_401_without_or_with_wrong_key_when_configured(client, monkeypatch):
+    monkeypatch.setattr(config, "API_KEY", "secret")
+    monkeypatch.setattr(api, "answer_question", lambda q: _result())
+    assert client.post("/ask", json={"question": "Delays at Gouvy?"}).status_code == 401
+    assert client.post(
+        "/ask", json={"question": "Delays at Gouvy?"}, headers={"X-API-Key": "wrong"}
+    ).status_code == 401
+
+
+def test_ask_200_with_the_correct_key(client, monkeypatch):
+    monkeypatch.setattr(config, "API_KEY", "secret")
+    monkeypatch.setattr(api, "answer_question", lambda q: _result())
+    resp = client.post(
+        "/ask", json={"question": "Delays at Gouvy?"}, headers={"X-API-Key": "secret"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["answer"].startswith("Gouvy saw delays")
+
+
+def test_rate_limit_returns_429_past_the_cap(client, monkeypatch, _reset_rate_limit):
+    monkeypatch.setattr(config, "API_KEY", "")  # no key gate, so this isolates the limiter
+    monkeypatch.setattr(config, "RATE_LIMIT_PER_MINUTE", 3)
+    monkeypatch.setattr(api, "answer_question", lambda q: _result())
+    for _ in range(3):
+        assert client.post("/ask", json={"question": "Delays at Gouvy?"}).status_code == 200
+    assert client.post("/ask", json={"question": "Delays at Gouvy?"}).status_code == 429

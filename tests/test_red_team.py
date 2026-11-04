@@ -2,7 +2,7 @@
 Adversarial "red team" suite: it attacks RailPulse's own guardrails and
 asserts they hold. Every test is named after the attack it represents.
 
-The four deterministic defenses under test (the model is never the defense):
+The five deterministic defenses under test (the model is never the defense):
 - guardrails.validate_query  (app/guardrails.py:73) -- SELECT-only allow-list,
   single-statement rule, forbidden-keyword / comment / sqlite_* / dangerous-
   function block-lists, table allow-list, quoted-column whitelist.
