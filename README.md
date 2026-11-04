@@ -2,9 +2,9 @@
 
 I built an on-call Railway Operations Assistant that lets station managers ask natural-language
 questions about Belgian rail delays and get SQL-backed answers with tactical recommendations —
-powered by Groq's free tier by default (`LLM_PROVIDER=groq`), or DeepSeek's API first with Groq
-as automatic fallback when `LLM_PROVIDER=auto` (the `.env.example` setting), and a fully local,
-free Ollama option.
+powered by Groq's free tier by default (`LLM_PROVIDER=groq`), or Groq first with DeepSeek, OpenRouter
+and Ollama as automatic fallbacks when `LLM_PROVIDER=auto` (the `.env.example` setting), and a fully
+local, free Ollama option.
 
 ## Overview
 
@@ -83,16 +83,16 @@ GROQ_MODEL=openai/gpt-oss-120b
 Each Groq key has its own tokens-per-minute quota (8K on the free tier, and one Text-to-SQL call
 is ~3.4K prompt tokens), so extra keys `GROQ_API_KEY_2`, `_3`, … are rotated through on a rate limit.
 
-**Option D — Auto (DeepSeek first, Groq as fallback)**
+**Option D — Auto (Groq first, then DeepSeek, OpenRouter, Ollama)**
 ```
 LLM_PROVIDER=auto
+GROQ_API_KEY=your_key_here
 DEEPSEEK_API_KEY=your_key_here
 DEEPSEEK_MODEL=deepseek-flash
-GROQ_API_KEY=your_key_here
 ```
-DeepSeek (paid API) answers first; if it fails, is rate-limited, or its answer is cut off, Groq
-answers instead. The UI caption under each answer, the weekly brief footer and `query_audit.log`
-record which provider and model actually answered.
+Groq answers first; if it fails, is rate-limited, or its answer is cut off, DeepSeek answers
+instead, then OpenRouter, then a local Ollama. The UI caption under each answer, the weekly brief
+footer and `query_audit.log` record which provider and model actually answered.
 
 ### 4. Run the app
 
@@ -100,6 +100,21 @@ record which provider and model actually answered.
 python -m streamlit run app/streamlit_app.py
 ```
 (Using `python -m streamlit` rather than the bare `streamlit` command avoids a `ModuleNotFoundError: No module named 'app'` some environments hit.)
+
+### 5. HTTP API (optional)
+
+The same pipeline over plain HTTP, for other services and front ends:
+
+```bash
+python -m uvicorn api.main:app --port 8003
+```
+
+- `GET /api/health`: liveness probe, always open
+- `GET /api/config`: provider and model in use, no keys
+- `POST /ask` with `{"question": "..."}`: the answer, SQL, rows, who answered and any ungrounded figures
+
+Before you expose it, set `RAILPULSE_API_KEY` (callers send it as `X-API-Key`) and
+`RAILPULSE_RATE_LIMIT_PER_MINUTE`; both are off by default and `/api/health` stays open.
 
 ## Project Structure
 
@@ -111,15 +126,23 @@ python -m streamlit run app/streamlit_app.py
 │   ├── guardrails.py       # SQL safety validation
 │   ├── prompts.py          # Text-to-SQL, Consultant and weekly-report prompts
 │   ├── sql_utils.py        # SQL extraction + consultant input (delays in minutes)
+│   ├── engine.py           # answer_question(): the text-to-SQL + consultant pipeline, shared by the UI and the API
 │   └── streamlit_app.py    # chat UI
+├── api/
+│   └── main.py             # FastAPI: GET /api/health, GET /api/config, POST /ask (optional key + rate limit)
 ├── .streamlit/
 │   └── config.toml         # theme colors
 ├── scripts/
 │   ├── build_database.py         # CSV -> SQLite, with polling dedup
 │   ├── check_values.py           # prints real column values used to ground the prompts
-│   └── generate_weekly_report.py # weekly executive brief
+│   ├── generate_weekly_report.py # weekly executive brief
+│   ├── red_team.py               # opt-in live red-team probe (spends quota, double-gated)
+│   └── spark_aggregate.py        # PySpark mirror of the snapshot dedup, local mode
 ├── tests/                  # offline pytest suite (all LLM calls mocked)
 ├── test_pipeline.py        # live smoke test against the configured LLM
+├── requirements.txt        # app runtime deps
+├── requirements-dev.txt    # + pytest, httpx (TestClient), debugpy
+├── requirements-spark.txt  # pyspark, only for scripts/spark_aggregate.py
 ├── data/
 │   └── railpulse_ai.db
 └── reports/                # weekly executive brief (nice-to-have)
@@ -133,6 +156,8 @@ python -m pytest
 ```
 The suite runs offline: every provider call is mocked and socket connections are blocked.
 `test_pipeline.py` is different — it calls the real LLM and spends free-tier quota.
+The red-team suite (`tests/test_red_team.py`) is part of the offline run; its live counterpart, `scripts/red_team.py`, is opt-in and spends quota too.
+The Spark mirror's tests skip unless you `pip install -r requirements-spark.txt` and have Java on PATH.
 
 ## Data Schema
 

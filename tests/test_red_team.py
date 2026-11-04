@@ -207,10 +207,10 @@ def test_known_limit_verbatim_system_prompt_leak_is_not_caught():
     # looks_like_leaked_meta only catches the short safety/meta fragment style it
     # was built for (see its docstring). A long, verbatim dump of the system
     # prompt is NOT caught by this heuristic. This is a documented limitation,
-    # not a bug: the real defenses against a prompt dump are the prompt-level
-    # instruction and the fact the consultant only ever receives result rows,
-    # never the system prompt. This test pins the current boundary so anyone who
-    # later strengthens the heuristic sees that it moved.
+    # not a bug: the real defenses are the prompt-level instruction and the fact
+    # that the consultant call never sees the text-to-SQL prompt, only its own
+    # system prompt plus the question, SQL and rows. This test pins the current
+    # boundary so anyone who later strengthens the heuristic sees that it moved.
     leaked = (
         "You are a SQL generation engine for a Belgian railway operations "
         "database (SQLite). Your ONLY job is to translate a natural language "

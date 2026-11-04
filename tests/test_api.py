@@ -9,9 +9,12 @@ HTTP path. Nothing reaches the network and the real DB is never touched.
 """
 
 import sqlite3
+import time
+from types import SimpleNamespace
 
 import pytest
 import requests
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from api import main as api
@@ -195,6 +198,17 @@ def test_ask_401_without_or_with_wrong_key_when_configured(client, monkeypatch):
     ).status_code == 401
 
 
+def test_non_ascii_key_is_401_not_500(monkeypatch):
+    """hmac.compare_digest raises TypeError on a non-ASCII str, and Starlette
+    decodes header values as latin-1, so a raw `X-API-Key: é` used to crash the
+    dependency (500). TestClient can't send a non-ASCII header value, so the
+    dependency is called directly."""
+    monkeypatch.setattr(config, "API_KEY", "secret")
+    with pytest.raises(HTTPException) as exc:
+        api.require_api_key(x_api_key="é")
+    assert exc.value.status_code == 401
+
+
 def test_ask_200_with_the_correct_key(client, monkeypatch):
     monkeypatch.setattr(config, "API_KEY", "secret")
     monkeypatch.setattr(api, "answer_question", lambda q: _result())
@@ -212,3 +226,26 @@ def test_rate_limit_returns_429_past_the_cap(client, monkeypatch, _reset_rate_li
     for _ in range(3):
         assert client.post("/ask", json={"question": "Delays at Gouvy?"}).status_code == 200
     assert client.post("/ask", json={"question": "Delays at Gouvy?"}).status_code == 429
+
+
+def test_rate_limit_store_is_swept_of_idle_clients(monkeypatch, _reset_rate_limit):
+    """50 IPs call once each, the window passes, one more call lands on the
+    1,000th-call sweep, and the store keeps at most that one caller. The
+    dependency is called with a stub request so each call can carry its own IP
+    (TestClient reports every request as the same host)."""
+    monkeypatch.setattr(config, "RATE_LIMIT_PER_MINUTE", 3)
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    # 949 earlier calls, so the 51st call below is the 1,000th and triggers the sweep.
+    monkeypatch.setattr(api, "_rate_calls", 949)
+
+    def _request(ip):
+        return SimpleNamespace(client=SimpleNamespace(host=ip))
+
+    for i in range(50):
+        api.rate_limit(_request(f"10.0.0.{i}"))
+    assert len(api._rate_hits) == 50
+
+    clock[0] += api._RATE_WINDOW_SECONDS + 1
+    api.rate_limit(_request("10.0.1.1"))
+    assert len(api._rate_hits) <= 1

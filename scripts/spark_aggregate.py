@@ -1,12 +1,9 @@
 """PySpark mirror of the snapshot -> stop-event collapse.
 
-Additive to the existing pandas/SQL pipeline: it does NOT replace it. The
-reference aggregation lives in the RailPulse GenAI repo
-(`railpulse-genai/scripts/build_database.py::keep_latest_snapshot`), which
-collapses the raw liveboard polling table (980,868 snapshot rows) into one row
-per stop event (99,014 rows). This script reproduces that reduction with the
-Spark DataFrame API so the same collapse can run on a cluster instead of in a
-single pandas process.
+It doesn't replace the pandas pipeline. The reference is
+scripts/build_database.py::keep_latest_snapshot, next to this file, which
+collapses 980,868 snapshot rows into 99,014 stop events. This script
+reproduces that reduction with the Spark DataFrame API, in local mode.
 
 What one STOP EVENT is, and why the key is what it is (mirrored from the
 reference, kept here so the file is self-contained):
@@ -26,8 +23,9 @@ reference, kept here so the file is self-contained):
 
 pulled_at is parsed with an explicit day-first format ("dd/MM/yyyy HH:mm", the
 Power BI export locale). Letting the parser guess turns an ambiguous value like
-"01/08/2026" into month-first, every day above 12 fails to parse, and those
-null timestamps would be kept as the "latest" snapshot whatever their real time.
+"01/08/2026" into month-first, every day above 12 fails to parse, and the
+rows with a null timestamp would then lose to any row that parsed, whatever
+their real time.
 
 Usage:
     python spark_aggregate.py INPUT OUTPUT [--input-format csv|parquet]
@@ -79,8 +77,11 @@ def keep_latest_snapshot(
 
     sort_col is parsed with an explicit day-first format for the reason given
     in the module docstring; an unparseable value becomes null and sorts last
-    (nulls_last on a descending order), so a bad timestamp is never kept as the
-    "latest" snapshot over a good one.
+    (nulls_last on a descending order). This is the one place the two differ:
+    pandas keeps an unparseable timestamp as the latest poll (NaT sorts last
+    and keep='last' takes it), this version never does. On the 99,014 rows
+    shipped it makes no difference: every kept row has a dd/MM/yyyy HH:mm
+    pulled_at.
 
     Returns the winning rows with the original columns only (the helper columns
     are dropped), so the output schema equals the input schema -- one row per
@@ -111,10 +112,8 @@ def keep_latest_snapshot(
 def build_spark(app_name: str = "railpulse-snapshot-collapse") -> SparkSession:
     """Open a local SparkSession.
 
-    master=local[*] keeps everything in one JVM, which is what this repo needs:
-    the collapse is a single groupBy with no shuffle across machines, and the
-    point of the script is to show the same reduction expressed in Spark, not
-    to stand up a cluster.
+    There is one machine here, so local[*] is all the script needs. It shows
+    the same reduction in Spark; it doesn't stand up a cluster.
     """
     return (
         SparkSession.builder.appName(app_name)
