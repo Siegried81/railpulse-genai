@@ -17,16 +17,10 @@ import streamlit as st
 # importable without `python -m`.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.llm_client import call_llm, call_llm_until, looks_like_leaked_meta, LLMConnectionError
-from app.db import execute_query
-from app.prompts import (
-    CONSULTANT_MAX_TOKENS,
-    CONSULTANT_SYSTEM_PROMPT,
-    SQL_MAX_TOKENS,
-    TEXT_TO_SQL_SYSTEM_PROMPT,
-)
-from app.sql_utils import extract_sql, build_consultant_input, rows_in_minutes, ungrounded_figures
-from app import config, llm_client
+from app.llm_client import LLMConnectionError
+from app.engine import answer_question
+from app.sql_utils import rows_in_minutes
+from app import config
 
 st.set_page_config(page_title="RailPulse AI", page_icon="🚆", layout="wide")
 
@@ -271,86 +265,52 @@ if question:
         st.markdown(question)
 
     with st.chat_message("assistant"):
-        # --- Step 1: text-to-SQL ---
+        # The whole pipeline lives in app.engine.answer_question so the UI and
+        # the JSON API share one path and cannot drift. The branches below only
+        # decide how each outcome is shown; the behaviour (SQL, query, answer,
+        # grounding check, NO_QUERY handling) is identical to before.
         try:
-            with st.spinner("Translating your question into SQL..."):
-                # stop=(";",) halts generation right after the query, which is
-                # both faster (no rambling) and safer (no stray text after the
-                # semicolon that could trip the "multiple statements" guardrail).
-                # call_llm_until retries (bypassing cache) if the free-tier
-                # backend returns something that isn't valid SQL or NO_QUERY --
-                # auto-routed free models occasionally leak a stray meta/safety
-                # line instead of the actual query even at temperature=0.
-                raw_sql = call_llm_until(
-                    TEXT_TO_SQL_SYSTEM_PROMPT,
-                    question,
-                    is_valid=lambda s: extract_sql(s).upper().startswith(("SELECT", "NO_QUERY")),
-                    stop=(";",),
-                    max_tokens=SQL_MAX_TOKENS,
-                )
-                sql = extract_sql(raw_sql)
-                sql_by = llm_client.LAST_ANSWERED_BY
+            with st.spinner("Working on your answer..."):
+                result = answer_question(question)
         except LLMConnectionError as e:
+            # Raised after the SQL step carries the SQL and rows it computed
+            # before the answer step failed, so they still show in the history.
             answer = f"🔌 **Can't reach the LLM backend.** {e}"
             st.error(answer)
             st.session_state.messages.append(
-                {"role": "assistant", "content": answer, "sql": None, "rows": None}
+                {"role": "assistant", "content": answer,
+                 "sql": getattr(e, "sql", None), "rows": getattr(e, "rows", None)}
             )
             st.stop()
-
-        if sql.upper().startswith("NO_QUERY"):
-            reason = sql.split(":", 1)[-1].strip()
-            answer = f"I can't answer that with the data I have access to. {reason}"
-            st.warning(answer)
+        except ValueError as e:
+            answer = f"⛔ That query was blocked by safety guardrails: {e}"
+            st.error(answer)
             st.session_state.messages.append(
-                {"role": "assistant", "content": answer, "sql": None, "rows": None}
+                {"role": "assistant", "content": answer, "sql": getattr(e, "sql", None), "rows": None}
             )
         else:
-            try:
-                with st.spinner("Querying the database..."):
-                    rows = execute_query(sql)
-            except ValueError as e:
-                answer = f"⛔ That query was blocked by safety guardrails: {e}"
-                st.error(answer)
+            answer = result["answer"]
+            if result["sql"] is None:
+                # NO_QUERY verdict: a normal outcome, shown as a notice.
+                st.warning(answer)
                 st.session_state.messages.append(
-                    {"role": "assistant", "content": answer, "sql": sql, "rows": None}
+                    {"role": "assistant", "content": answer, "sql": None, "rows": None}
                 )
             else:
-                # --- Step 2: consultant explanation ---
-                try:
-                    with st.spinner("Preparing your answer..."):
-                        consultant_input = build_consultant_input(question, sql, rows)
-                        answer = call_llm_until(
-                            CONSULTANT_SYSTEM_PROMPT,
-                            consultant_input,
-                            is_valid=lambda s: not looks_like_leaked_meta(s)
-                            and not ungrounded_figures(s, consultant_input),
-                            max_tokens=CONSULTANT_MAX_TOKENS,
-                        )
-                        # call_llm_until() returns its last attempt even if
-                        # still invalid; say so rather than hide it.
-                        ungrounded = ungrounded_figures(answer, consultant_input)
-                except LLMConnectionError as e:
-                    answer = f"🔌 **Can't reach the LLM backend.** {e}"
-                    st.error(answer)
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": answer, "sql": sql, "rows": rows}
-                    )
-                    st.stop()
-
-                if ungrounded:
+                if result["ungrounded"]:
                     answer += (
                         "\n\n⚠️ *Check against the raw data: this answer contains figures not found "
-                        f"in the query results ({', '.join(ungrounded)}).*"
+                        f"in the query results ({', '.join(result['ungrounded'])}).*"
                     )
                 st.markdown(answer)
-                answered_by = _answered_by(sql_by, llm_client.LAST_ANSWERED_BY)
+                answered_by = _answered_by(result["sql_by"], result["answer_by"])
                 if answered_by:
                     st.caption(answered_by)
 
                 n = len(st.session_state.messages)
-                _render_sql_and_data(sql, rows, file_index=n, key_suffix=f"new_{n}")
+                _render_sql_and_data(result["sql"], result["rows"], file_index=n, key_suffix=f"new_{n}")
 
                 st.session_state.messages.append(
-                    {"role": "assistant", "content": answer, "sql": sql, "rows": rows, "answered_by": answered_by}
+                    {"role": "assistant", "content": answer, "sql": result["sql"],
+                     "rows": result["rows"], "answered_by": answered_by}
                 )

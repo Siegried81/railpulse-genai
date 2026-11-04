@@ -254,3 +254,76 @@ last-resort fallbacks.
 **Revisit if.** DeepSeek credit is exhausted for good (drop it from the chain),
 or an OpenRouter key / local Ollama is added and should be reflected in the
 `.env` comments and README.
+
+---
+
+## 2026-11-04 — JSON API over the pipeline, sharing one `answer_question`
+
+**What.** Added a FastAPI app in `api/main.py` (`GET /api/health`,
+`GET /api/config`, `POST /ask`) and extracted the text-to-SQL + consultant
+pipeline out of the Streamlit page into `app/engine.py::answer_question`. The
+Streamlit page now calls that function instead of running the steps inline, so
+the UI and the API share one path. Additive: no pipeline behaviour changed.
+`fastapi==0.162.0` and `uvicorn==0.54.0` added to `requirements.txt`.
+Launch: `python -m uvicorn api.main:app --host 0.0.0.0 --port 8003`.
+
+**Why.** The API needed the same steps the UI runs. Two copies of a pipeline
+with safety checks drift; one function cannot. Every guardrail is kept by
+construction (one LLM call per step, read-only DB + `validate_query`,
+`ungrounded_figures` on the answer, `LAST_ANSWERED_BY` recorded). The API maps
+`LLMConnectionError` → 503 and the guardrail/timeout `ValueError` → 422; a
+NO_QUERY verdict is a normal 200 with `no_query: true` and null `sql`/`rows`.
+
+**What changed in the numbers.** No data figure moves. One visible UI change:
+the three stage-specific spinners ("Translating...", "Querying...",
+"Preparing...") became one ("Working on your answer..."), because the three
+steps are now a single function call. The answer, SQL, table, captions,
+warnings and error messages are unchanged.
+
+**Behaviour kept exactly.** An `LLMConnectionError` raised after the SQL ran
+carries `.sql` and `.rows`, and the guardrail `ValueError` carries `.sql`, so
+the Streamlit history still shows the query (and rows) for those error cases as
+it did inline. The API ignores those attributes.
+
+**Tests.** 87 → 102 passed. Added `tests/test_engine.py` (7) and
+`tests/test_api.py` (8). All LLM calls mocked at `requests.post`, the DB is a
+tiny temp SQLite file, no real network.
+
+**Revisit if.** A client needs the ungrounded caveat already folded into
+`answer` (it is returned raw plus the `ungrounded` list), or the API grows
+write/stateful endpoints (then it needs the auth the read-only endpoints don't).
+
+---
+
+## 2026-11-04 — tests allow loopback sockets so TestClient can run
+
+**What.** `tests/conftest.py::no_network` now allows connections to
+`127.0.0.1` / `::1` / `localhost` and blocks every other host, instead of
+blocking all `socket.connect`.
+
+**Why.** FastAPI's `TestClient` runs the app in-process and needs a self-pipe
+socket (on Windows it connects over loopback); the blanket block raised inside
+the client before any test code ran. Every LLM provider is an external host, so
+the "an unmocked provider call fails loudly instead of spending quota" guarantee
+is unchanged — loopback reaches no provider.
+
+**What changed in the numbers.** Nothing measured. Test-only change.
+
+**Revisit if.** A test ever needs to assert that a loopback call is blocked, or
+a provider is ever addressed over loopback (a local mock server) and should be
+caught instead of allowed.
+
+---
+
+## 2026-11-04 — note on the local `.venv`
+
+**What.** The `.venv` in this checkout is Python 3.14.7 (not the 3.11.9 that
+`CLAUDE.md` describes) and shipped without `pytest`, `fastapi`, `httpx` or
+`pydantic`. Installed `pytest`, `fastapi`, `httpx`, `pydantic` into it to run
+the suite and the new API tests. Only `fastapi` and `uvicorn` (already present)
+are app runtime deps and are pinned in `requirements.txt`; `pytest`/`httpx` are
+test-only and, like the pre-existing `pytest`, are not listed there.
+
+**Revisit if.** The reference environment is rebuilt: re-pin `requirements.txt`
+to whatever Python/venv is then authoritative, and reconcile the `CLAUDE.md`
+"3.11.9" note with reality.
