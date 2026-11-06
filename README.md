@@ -25,6 +25,24 @@ local, free Ollama option.
 - **Chat UI**: sidebar with one-click example questions, SQL and CSV export on every answer, and an SNCB-inspired navy/grey theme.
 - **Automated weekly executive brief**: `scripts/generate_weekly_report.py` pulls the week's top delay anomalies, on-time rate, and worst-performing station straight from the database, then has the LLM write a grounded Markdown report to `reports/`. Every figure in the report — and in every consultant answer — is checked against the numbers the LLM was given; an answer with an invented or derived figure is regenerated; if it still fails, the UI flags it and the brief is not written.
 
+## Screenshots
+
+Taken on 6 November 2026 against the local app, answered by Groq `openai/gpt-oss-120b`.
+
+![Chat with the example questions in the sidebar](images/chat_overview.png)
+
+A grounded answer next to a declined one: wheelchair data is empty in the feed, so the assistant says so instead of guessing.
+
+![Train category answer and a declined accessibility question](images/train_category_and_decline.png)
+
+A question in French gets an answer in French.
+
+![French question about the peak hour at Antwerp-Central](images/french_language_query.png)
+
+The sidebar lists what the data can't answer.
+
+![Known limitations in the sidebar](images/known_limitations_sidebar.png)
+
 ## Setup
 
 ### 1. Clone and install dependencies
@@ -222,7 +240,6 @@ I load 5 tables into SQLite from my Power BI export:
 - **Direction-level data** is empty for all records; questions about direction are declined rather than answered with guessed data.
 - **Cancellation data** (`canceled`) is 0/False for effectively all records — the source GTFS-Realtime feed doesn't reliably report cancellations, so a "0 canceled trains" answer reflects a feed limitation, not necessarily a perfect on-time record. The assistant caveats this explicitly.
 - **Wheelchair accessibility data** is unpopulated for virtually all stations in this feed.
-- **The model decides the decimals, not me.** Every figure is grounded (`ungrounded_figures` checks it exists in the rows the model was handed), but display rounding is the model's call. The SQL converts to minutes itself (`AVG(delay_seconds) / 60.0 AS avg_delay_minutes`), and `rows_in_minutes()` only rounds columns still in *seconds*, so that already-minutes value reaches the model at full precision — the same average reads `4.42` on one model and `4.426991…` on another. Cosmetic, not a wrong number; more in [`docs/deep-dive.md`](docs/deep-dive.md).
 
 ## Author
 
