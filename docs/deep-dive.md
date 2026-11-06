@@ -32,10 +32,10 @@ The Streamlit app calls `app.engine.answer_question()` directly — a Python cal
 
 Which means the Streamlit UI is open to anyone with the link, and every question spends my Groq quota. Closing that off would be a Streamlit-level password, not this key.
 
-## Why the same average prints different decimals
+## Why the same average used to print different decimals
 
-On Render I get `4.426991150442478 minutes`; locally I've seen `4.42`. Same code, same number — a different model formatting it.
+On Render I got `4.426991150442478 minutes`; locally I'd seen `4.42`. Same code, same number, a different model formatting it.
 
-Here's the chain. The Text-to-SQL prompt asks the model to convert to minutes in the query and name the column `_minutes` (`AVG(delay_seconds) / 60.0 AS avg_delay_minutes`), and that's what it does — so SQLite hands back a float like `4.426991150442478`, already in minutes. `sql_utils.rows_in_minutes()` then only touches columns still in *seconds* (a bare `AVG(delay_seconds)`, or an alias ending `_seconds`) and rounds those to two decimals. A `_minutes` column isn't one of those, so it passes straight through at full precision. The consultant LLM gets `4.426991150442478` in its prompt and shows it however it likes: Groq's `gpt-oss-120b` prints it whole; another model rounds to `4.42`. On `LLM_PROVIDER=auto` it depends on which provider answered.
+The chain: the Text-to-SQL prompt asks the model to convert to minutes in the query and name the column `_minutes` (`AVG(delay_seconds) / 60.0 AS avg_delay_minutes`), so SQLite hands back a float like `4.426991150442478`, already in minutes. `sql_utils.rows_in_minutes()` only touches columns still in *seconds* and rounds those to two decimals, so a `_minutes` column went through at full precision. Groq's `gpt-oss-120b` printed it whole; another model rounded it.
 
-The figure is still grounded. `ungrounded_figures()` checks every number in the answer against what the model was given, up to the answer's own rounding, and the full-precision value is exactly what it was given, so `4.42`, `4.4` and `4.426991…` all pass. It's a display inconsistency, not a wrong number. If I wanted both sides identical, the fix isn't in `rows_in_minutes()` — it never sees these `_minutes` columns. It's to round every number the consultant is handed, whatever the column is called (round the floats in `build_consultant_input()`), or to round in the SQL itself (`ROUND(AVG(delay_seconds) / 60.0, 2)`). Then the guardrail sees `4.43` too and everything lines up.
+The figure was always grounded, so this was a display problem, not a wrong number. It's fixed in `build_consultant_input()`: every float the consultant is handed is rounded, to 2 decimals, or to 3 significant digits below 1 so a small rate doesn't collapse to 0. The guardrail checks against that same rounded input, so the model now sees `4.43` and says `4.43`. The on-screen table and the CSV keep the raw values.

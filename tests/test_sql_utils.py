@@ -90,3 +90,29 @@ def test_derived_figures_in_words_are_flagged():
 def test_double_check_is_not_a_multiple():
     src = _source([{"n": 3}])
     assert ungrounded_figures("Please double-check the 3 records.", src) == []
+
+
+def test_no_break_space_thousands_separator_is_grounded():
+    # gpt-oss writes "21\u202f763"; it was read as "21" and "763" and flagged.
+    src = _source([{"Train Category": "S", "delay_count": 21763}])
+    for sep in ("\u202f", "\u00a0", ","):
+        assert ungrounded_figures(f"Category S has 21{sep}763 delays.", src) == []
+
+
+def test_plain_space_does_not_join_two_numbers():
+    src = _source([{"n": 2}, {"n": 300}])
+    assert ungrounded_figures("Between 2 and 300 trains.", src) == []
+    assert ungrounded_figures("Category S has 21 763 delays.", src) == ["21", "763"]
+
+
+def test_consultant_input_rounds_sql_computed_minutes():
+    rows = [{"Stations Name": "Nivelles", "avg_delay_minutes": 4.426991150442478, "rate": 0.0042137, "n": 452}]
+    text = build_consultant_input("q", "SELECT 1", rows)
+    assert "4.43" in text and "4.4269" not in text
+    assert "0.00421" in text
+    assert "452" in text
+
+
+def test_rounding_leaves_table_values_raw():
+    rows = [{"avg_delay_minutes": 4.426991150442478}]
+    assert rows_in_minutes(rows) == rows

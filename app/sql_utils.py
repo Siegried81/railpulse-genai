@@ -78,8 +78,17 @@ def rows_in_minutes(rows: list[dict]) -> list[dict]:
 # cancellation caveat and plain counting need ("not a confirmed 100%").
 _ALWAYS_ALLOWED = (0.0, 1.0, 2.0, 5.0, 15.0, 100.0)
 
-# Digits, with optional thousands separators ("2,520") and decimals.
-_NUMBER = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
+# Digits, with optional thousands separators and decimals. The separator can
+# be a comma ("2,520") or the narrow / plain no-break space some models write
+# ("21\u202f763"). A regular space is not accepted: "between 2 and 300" must
+# stay two numbers.
+_THOUSANDS_SEP = ",\u202f\u00a0"
+_NUMBER = re.compile(rf"\d{{1,3}}(?:[{_THOUSANDS_SEP}]\d{{3}})+(?:\.\d+)?|\d+(?:\.\d+)?")
+
+
+def _to_float(token: str) -> float:
+    """Parse a _NUMBER match, dropping its thousands separators."""
+    return float(re.sub(f"[{_THOUSANDS_SEP}]", "", token))
 
 # Clock times ("16:00") are labels for an hour value, not measurements; they
 # are removed before checking so "between 6:00 and 12:00" is not flagged.
@@ -109,12 +118,12 @@ def ungrounded_figures(answer: str, source_text: str) -> list[str]:
     and derived phrasings in words are flagged outright. An empty list means
     the answer is grounded.
     """
-    allowed = [float(n.replace(",", "")) for n in _NUMBER.findall(source_text)]
+    allowed = [_to_float(n) for n in _NUMBER.findall(source_text)]
     allowed.extend(_ALWAYS_ALLOWED)
 
     problems = []
     for token in _NUMBER.findall(_CLOCK_TIME.sub(" ", answer)):
-        value = float(token.replace(",", ""))
+        value = _to_float(token)
         decimals = len(token.split(".")[1]) if "." in token else 0
         tolerance = 0.5 * 10 ** -decimals + 1e-9
         if not any(abs(value - a) <= tolerance for a in allowed):
@@ -132,5 +141,22 @@ def build_consultant_input(question: str, sql: str, rows: list[dict]) -> str:
     return (
         f"Question: {question}\n"
         f"SQL executed: {sql}\n"
-        f"Results: {rows_in_minutes(rows[:CONSULTANT_MAX_ROWS])}"
+        f"Results: {_rounded(rows_in_minutes(rows[:CONSULTANT_MAX_ROWS]))}"
     )
+
+
+def _rounded(rows: list[dict]) -> list[dict]:
+    """Round float values for the consultant: 2 decimals, or 3 significant
+    digits below 1 so a small rate does not collapse to 0.
+
+    A minutes average computed in SQL (AVG(delay_seconds) / 60.0) is not a
+    seconds column, so rows_in_minutes leaves it alone, and the model then
+    copied it verbatim ("4.426991150442478 minutes"). Only the consultant
+    input is rounded; the on-screen table and the CSV keep the raw values.
+    """
+    def _round(value):
+        if not isinstance(value, float):
+            return value
+        return round(value, 2) if abs(value) >= 1 else float(f"{value:.3g}")
+
+    return [{key: _round(value) for key, value in row.items()} for row in rows]

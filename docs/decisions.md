@@ -429,3 +429,29 @@ doesn't guarantee it.
 rule is right and make the other side match. Or the collapse really has to run
 on a cluster: then `build_spark` takes a master URL and the CSV read needs a
 schema.
+
+
+## 2026-11-06: round the consultant input, accept no-break-space thousands
+
+**What.** Two fixes in `app/sql_utils.py`, found while retaking the README
+screenshots.
+
+1. `build_consultant_input()` now rounds every float it hands the consultant:
+   2 decimals, or 3 significant digits below 1. A minutes average computed in
+   SQL isn't a seconds column, so `rows_in_minutes()` never rounded it, and
+   `gpt-oss-120b` answered "4.426991150442478 minutes". It now says 4.43.
+2. `ungrounded_figures()` reads `21\u202f763` (narrow no-break space) and
+   `21\u00a0763` as one number. gpt-oss writes thousands that way, so
+   "21 763 delays" was split into 21 and 763 and a correct answer got the
+   "figures not found" warning. A plain space still splits, so "between 2 and
+   300" stays two numbers.
+
+**What changed in the numbers.** The consultant sees rounded floats, so an
+answer can no longer quote more precision than 2 decimals (or 3 significant
+digits). The figures themselves don't change. The table and the CSV still show
+the raw values. The grounding check now passes answers it wrongly flagged
+before; it doesn't pass anything it used to catch (a derived 27.8 % on a
+72.2 % on-time rate is still flagged, checked live on 2026-11-06).
+
+**Revisit if.** A question needs more than 2 decimals on a value above 1, or a
+model starts using a plain space as a thousands separator.
