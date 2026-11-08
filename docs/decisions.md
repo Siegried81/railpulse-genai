@@ -317,8 +317,8 @@ caught instead of allowed.
 
 ## 2026-11-04 — note on the local `.venv`
 
-**What.** The `.venv` in this checkout is Python 3.14.7 (not the 3.11.9 that
-`CLAUDE.md` describes) and shipped without `pytest`, `fastapi`, `httpx` or
+**What.** The `.venv` in this checkout is Python 3.14.7 (not the 3.11.9 that a
+local, untracked setup note describes) and shipped without `pytest`, `fastapi`, `httpx` or
 `pydantic`. Installed `pytest`, `fastapi`, `httpx`, `pydantic` into it to run
 the suite and the new API tests. Only `fastapi` and `uvicorn` (already present)
 are app runtime deps and are pinned in `requirements.txt`; `pytest`/`httpx` are
@@ -327,10 +327,10 @@ test-only and, like the pre-existing `pytest`, are not listed there.
 httpx is pinned in requirements-dev.txt since 36b6e4a.
 
 **Revisit if.** The reference environment is rebuilt: re-pin `requirements.txt`
-to whatever Python/venv is then authoritative, and reconcile the `CLAUDE.md`
+to whatever Python/venv is then authoritative, and reconcile that local
 "3.11.9" note with reality.
 
-Follow-up (2026-11-04). The `CLAUDE.md` named above isn't in this repository. What the repo does pin is Python 3.11: the Dockerfile (`python:3.11-slim`) and CI (`.github/workflows/ci.yml:26`). The local venv is 3.14.7.
+Follow-up (2026-11-04). The setup note named above isn't in this repository. What the repo does pin is Python 3.11: the Dockerfile (`python:3.11-slim`) and CI (`.github/workflows/ci.yml:26`). The local venv is 3.14.7.
 
 ---
 
@@ -455,3 +455,45 @@ before; it doesn't pass anything it used to catch (a derived 27.8 % on a
 
 **Revisit if.** A question needs more than 2 decimals on a value above 1, or a
 model starts using a plain space as a thousands separator.
+
+
+## 2026-11-08: audit fixes (coordinates, wrong-table columns, grounding check)
+
+**What.** Five fixes, each pinned by a test.
+
+1. `scripts/build_database.py` reads the CSVs with `decimal=","`. The export
+   writes `50,8709`, so `latitude`, `longitude`, `stations.latitude` and
+   `stations.longitude` were stored as text. `AVG("stations.latitude")` gave
+   50.25 (integer parts only) and `"stations.latitude" > 50.85` compared
+   strings: 27,930 stop events instead of 46,727. A rebuild into a scratch
+   file gives REAL columns, 50.80 and 46,727, and every other value in all
+   five tables is identical (same row counts, 0 rows differ outside the
+   coordinates, on-time rate still 72.2%). The committed
+   `data/railpulse_ai.db` has not been rebuilt yet.
+2. `app/db.py` checks each double-quoted name against the columns of the
+   tables the query reads, taken from the database with `PRAGMA table_info`.
+   `KNOWN_COLUMNS` is one flat list, so `SELECT "train_category", ... FROM
+   liveboard_records GROUP BY "train_category"` passed it, and SQLite read
+   the unknown name as a string: one row labelled `train_category` with the
+   network average (2.01 min over 99,014 rows). It is now blocked. All 15
+   few-shot queries in the prompt still run.
+3. `ungrounded_figures()` reads a comma followed by one or two digits as a
+   decimal comma. French answers write `4,43`; it was split into 4 and 43, so
+   the correct figure was flagged and a wrong `4,12` passed as 4 and 12. A
+   comma before exactly three digits is still a thousands separator.
+4. `ungrounded_figures()` flags subset counts in words ("three of the five").
+   The committed weekly brief says "Three of the five peak delays occurred
+   on 2026-08-05", a count the model made itself, and it passed.
+5. `rows_in_minutes()` renames upper-case seconds columns too. The value of
+   `AVG(DELAY_SECONDS)` was converted but the column became
+   `minutesAVG(DELAY_SECONDS)`, so 5.0 minutes read as seconds.
+
+**What changed in the numbers.** After a rebuild, coordinate columns are
+numbers and comparisons on them change result. Nothing else in the data
+moves. The grounding check now passes correct French decimals and catches
+two things it missed. The query guard blocks a class of query it let through;
+it blocks nothing that used to give a right answer.
+
+**Revisit if.** A legitimate query uses a comma join (`FROM a, b`): only the
+first table is read, so a quoted column of `b` is blocked. Or a model writes
+three-decimal French figures ("4,437"), which still read as thousands.

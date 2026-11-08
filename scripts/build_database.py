@@ -126,7 +126,12 @@ def build_database() -> None:
             print(f"⚠️  Skipping '{table_name}': file not found at {csv_path}")
             continue
 
-        df = pd.read_csv(csv_path, sep=";", encoding="cp1252")
+        # The French-locale export writes decimals with a comma ("50,8709").
+        # Without decimal=",", latitude and longitude load as text: AVG()
+        # keeps only the integer part and "> 50.85" compares strings. Only
+        # those four coordinate columns change type; every other column
+        # parses the same either way.
+        df = pd.read_csv(csv_path, sep=";", encoding="cp1252", decimal=",")
 
         for col in DATE_COLUMNS_BY_TABLE.get(table_name, []):
             if col in df.columns:

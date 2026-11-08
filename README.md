@@ -19,7 +19,7 @@ local, free Ollama option.
 
 - **Text-to-SQL**: I translate natural language questions into SQL and execute them against the database.
 - **RailPulse Consultant**: I reframe results as short, tactical operational recommendations, not raw data dumps.
-- **Safety guardrails**: I only allow `SELECT` statements; destructive keywords (`DROP`, `DELETE`, `UPDATE`, etc.) are blocked before execution, and a column whitelist catches hallucinated column names.
+- **Safety guardrails**: I only allow `SELECT` statements; destructive keywords (`DROP`, `DELETE`, `UPDATE`, etc.) are blocked before execution, and a column whitelist catches hallucinated column names. A quoted column must also belong to a table the query reads, so a real column asked of the wrong table is blocked instead of coming back as a text label.
 - **Automatic unit conversion**: delays are stored in seconds; I convert them to minutes for all human-facing output.
 - **Provider-agnostic LLM client**: I can switch between Ollama (local), Groq, OpenRouter (hosted free tiers) or DeepSeek with a single environment variable — no code changes — or use `auto` (Groq with key rotation first, then DeepSeek, OpenRouter and a local Ollama as fallbacks). Includes caching, stop-sequence tuning, truncation detection, and clean error messages if a backend is unreachable.
 - **Chat UI**: sidebar with one-click example questions, SQL and CSV export on every answer, and an SNCB-inspired navy/grey theme.

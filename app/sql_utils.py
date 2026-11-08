@@ -42,8 +42,11 @@ def _minutes_column(name: str) -> str | None:
     """Return the minutes name for a seconds column, or None if it isn't one."""
     if not _SECONDS_COLUMN.fullmatch(name):
         return None
-    head, _, tail = name.rpartition("seconds")
-    return f"{head}minutes{tail}"
+    # Found case-insensitively, like the pattern, so "AVG(DELAY_SECONDS)"
+    # becomes "AVG(DELAY_minutes)" and no converted value keeps a name that
+    # still says seconds.
+    cut = name.lower().rfind("seconds")
+    return f"{name[:cut]}minutes{name[cut + len('seconds'):]}"
 
 
 def rows_in_minutes(rows: list[dict]) -> list[dict]:
@@ -82,13 +85,28 @@ _ALWAYS_ALLOWED = (0.0, 1.0, 2.0, 5.0, 15.0, 100.0)
 # be a comma ("2,520") or the narrow / plain no-break space some models write
 # ("21\u202f763"). A regular space is not accepted: "between 2 and 300" must
 # stay two numbers.
+# A comma followed by one or two digits is a decimal comma ("4,43" in a
+# French answer): a thousands group always has three digits. A comma before
+# exactly three digits stays a thousands separator, so "4,437" reads 4437.
 _THOUSANDS_SEP = ",\u202f\u00a0"
-_NUMBER = re.compile(rf"\d{{1,3}}(?:[{_THOUSANDS_SEP}]\d{{3}})+(?:\.\d+)?|\d+(?:\.\d+)?")
+_DECIMAL_COMMA = re.compile(r"\d+,\d{1,2}(?!\d)")
+_NUMBER = re.compile(
+    rf"\d{{1,3}}(?:[{_THOUSANDS_SEP}]\d{{3}})+(?:\.\d+)?"
+    rf"|{_DECIMAL_COMMA.pattern}"
+    r"|\d+(?:\.\d+)?"
+)
+
+
+def _normalise(token: str) -> str:
+    """Rewrite a _NUMBER match in plain "1234.5" form."""
+    if _DECIMAL_COMMA.fullmatch(token):
+        return token.replace(",", ".")
+    return re.sub(f"[{_THOUSANDS_SEP}]", "", token)
 
 
 def _to_float(token: str) -> float:
-    """Parse a _NUMBER match, dropping its thousands separators."""
-    return float(re.sub(f"[{_THOUSANDS_SEP}]", "", token))
+    """Parse a _NUMBER match: thousands separators dropped, decimal comma read as a point."""
+    return float(_normalise(token))
 
 # Clock times ("16:00") are labels for an hour value, not measurements; they
 # are removed before checking so "between 6:00 and 12:00" is not flagged.
@@ -96,10 +114,11 @@ _CLOCK_TIME = re.compile(r"\b\d{1,2}:\d{2}\b")
 
 _WORD_NUM = r"(?:one|two|three|four|five|six|seven|eight|nine|ten)"
 # Derived figures written in words, seen in real answers ("roughly one in
-# four records", "roughly one minute more per train"): proportions,
-# multiples and differences the model computed itself.
+# four records", "three of the five peak delays", "roughly one minute more
+# per train"): proportions, subset counts, multiples and differences the
+# model computed itself.
 _DERIVED_PHRASES = re.compile(
-    rf"\b{_WORD_NUM}\s+(?:in|out of)\s+{_WORD_NUM}\b"
+    rf"\b{_WORD_NUM}\s+(?:in|out of|of(?:\s+the)?)\s+{_WORD_NUM}\b"
     r"|\b(?:half|a quarter|a third|two thirds|three quarters|twice|triple|twofold|threefold)\b"
     r"|\bdouble\b(?!-)"
     rf"|\b(?:{_WORD_NUM}|a few)\s+(?:\w+\s+)?(?:more|less|fewer|longer|shorter|higher|lower)\b",
@@ -123,8 +142,9 @@ def ungrounded_figures(answer: str, source_text: str) -> list[str]:
 
     problems = []
     for token in _NUMBER.findall(_CLOCK_TIME.sub(" ", answer)):
-        value = _to_float(token)
-        decimals = len(token.split(".")[1]) if "." in token else 0
+        plain = _normalise(token)
+        value = float(plain)
+        decimals = len(plain.split(".")[1]) if "." in plain else 0
         tolerance = 0.5 * 10 ** -decimals + 1e-9
         if not any(abs(value - a) <= tolerance for a in allowed):
             problems.append(token)
