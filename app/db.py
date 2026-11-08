@@ -11,7 +11,7 @@ import logging
 import time
 from pathlib import Path
 from app import config
-from app.guardrails import validate_query
+from app.guardrails import quoted_identifiers, referenced_tables, validate_query
 
 logging.basicConfig(
     filename="query_audit.log",
@@ -48,6 +48,30 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _quoted_column_not_in_query_tables(conn: sqlite3.Connection, sql: str) -> str | None:
+    """Return the first double-quoted identifier that no table in the query has.
+
+    validate_query() checks quoted names against one flat list of every column
+    in the schema. That stops an invented name, but not a real column asked of
+    the wrong table: "train_category" lives in routes, and SQLite reads a
+    double-quoted name it cannot resolve as a string literal. So
+    `SELECT "train_category", AVG(delay_seconds) FROM liveboard_records
+    GROUP BY "train_category"` would run and return one group, labelled
+    'train_category', holding the network-wide average. This checks each
+    quoted name against the columns of the tables the query actually reads,
+    taken from the database itself rather than a hand-written copy.
+    """
+    columns = set()
+    for table in {t.lower() for t in referenced_tables(sql)}:
+        # Table names come from the allow-list already enforced by
+        # validate_query, so they are safe to put in the PRAGMA.
+        columns.update(row[1].lower() for row in conn.execute(f'PRAGMA table_info("{table}")'))
+    for identifier in quoted_identifiers(sql):
+        if identifier.lower() not in columns:
+            return identifier
+    return None
+
+
 def execute_query(sql: str) -> list[dict]:
     """
     Validate then execute a SQL query, returning rows as list of dicts.
@@ -60,6 +84,17 @@ def execute_query(sql: str) -> list[dict]:
         raise ValueError(f"Query blocked by guardrails: {reason}")
 
     conn = get_connection()
+    try:
+        stray = _quoted_column_not_in_query_tables(conn, sql)
+    except Exception:
+        conn.close()
+        raise
+    if stray is not None:
+        conn.close()
+        reason = f'"{stray}" is not a column of any table this query reads'
+        logging.info(f"BLOCKED | reason={reason} | sql={sql!r}")
+        raise ValueError(f"Query blocked by guardrails: {reason}")
+
     deadline = time.monotonic() + MAX_QUERY_SECONDS
     # A non-zero return from the handler makes SQLite abort the running
     # statement with "interrupted", which lands in the OperationalError branch.

@@ -137,3 +137,41 @@ def test_internals_dangerous_functions_and_unknown_tables_are_blocked(sql):
 )
 def test_joins_and_subqueries_on_known_tables_pass(sql):
     assert validate_query(sql) == (True, "")
+
+
+@pytest.fixture
+def two_table_db(tmp_path, monkeypatch):
+    path = tmp_path / "two.db"
+    conn = sqlite3.connect(path)
+    conn.execute('CREATE TABLE liveboard_records (vehicle_id TEXT, delay_seconds INTEGER)')
+    conn.execute('CREATE TABLE trips (trip_id TEXT, route_id TEXT)')
+    conn.execute('CREATE TABLE routes (route_id TEXT, train_category TEXT)')
+    conn.executemany("INSERT INTO liveboard_records VALUES (?, ?)", [("T1", 60), ("T2", 600)])
+    conn.executemany("INSERT INTO trips VALUES (?, ?)", [("T1", "R1"), ("T2", "R2")])
+    conn.executemany("INSERT INTO routes VALUES (?, ?)", [("R1", "IC"), ("R2", "S")])
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(config, "DB_PATH", str(path))
+    return path
+
+
+def test_quoted_column_of_a_table_not_in_the_query_is_blocked(two_table_db):
+    # "train_category" is a real column, so the flat whitelist accepts it, but
+    # liveboard_records has no such column: SQLite reads it as the string
+    # 'train_category' and returns one group with the network-wide average.
+    sql = (
+        'SELECT "train_category", AVG(delay_seconds) AS avg_delay_seconds '
+        'FROM liveboard_records GROUP BY "train_category"'
+    )
+    with pytest.raises(ValueError, match="train_category"):
+        db.execute_query(sql)
+
+
+def test_quoted_column_of_a_joined_table_passes(two_table_db):
+    sql = (
+        'SELECT r."train_category", AVG(lr.delay_seconds) AS avg_delay_seconds '
+        "FROM liveboard_records lr JOIN trips t ON lr.vehicle_id = t.trip_id "
+        'JOIN routes r ON t.route_id = r.route_id GROUP BY r."train_category" ORDER BY 1'
+    )
+    rows = db.execute_query(sql)
+    assert [r["train_category"] for r in rows] == ["IC", "S"]

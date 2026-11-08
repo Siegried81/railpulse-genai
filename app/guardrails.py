@@ -70,6 +70,21 @@ KNOWN_COLUMNS = {
 }
 
 
+def referenced_tables(sql: str) -> list[str]:
+    """Names right after each FROM/JOIN, as written in the query.
+
+    Shared by the table allow-list below and the per-table column check in
+    db.py, so both read the same tables out of a query. Same regex limit as
+    noted there: only the first table of a comma list "FROM a, b" is seen.
+    """
+    return re.findall(r"\b(?:FROM|JOIN)\s+[\"`\[]?(\w+)", sql, re.IGNORECASE)
+
+
+def quoted_identifiers(sql: str) -> list[str]:
+    """Every double-quoted identifier in the query, without its quotes."""
+    return re.findall(r'"([^"]+)"', sql)
+
+
 def validate_query(sql: str) -> tuple[bool, str]:
     """
     Returns (is_safe, reason).
@@ -123,12 +138,11 @@ def validate_query(sql: str) -> tuple[bool, str]:
     # comma list "FROM a, b" is checked. That cannot reach anything sensitive
     # because the database holds only KNOWN_TABLES plus sqlite_* objects,
     # which are blocked above.
-    for table in re.findall(r"\b(?:FROM|JOIN)\s+[\"`\[]?(\w+)", cleaned, re.IGNORECASE):
+    for table in referenced_tables(cleaned):
         if table.lower() not in KNOWN_TABLES:
             return False, f"Unknown table referenced: {table}"
 
-    quoted_identifiers = re.findall(r'"([^"]+)"', cleaned)
-    for identifier in quoted_identifiers:
+    for identifier in quoted_identifiers(cleaned):
         if identifier.lower() not in KNOWN_COLUMNS:
             return False, f"Unknown column referenced: \"{identifier}\" (possible hallucination)"
 

@@ -116,3 +116,34 @@ def test_consultant_input_rounds_sql_computed_minutes():
 def test_rounding_leaves_table_values_raw():
     rows = [{"avg_delay_minutes": 4.426991150442478}]
     assert rows_in_minutes(rows) == rows
+
+
+def test_decimal_comma_is_read_as_a_decimal():
+    # A question in French gets an answer in French, and French writes 4,43
+    # for 4.43. Read as "4" and "43", a correct figure was flagged and a wrong
+    # one ("4,12" when the data says 4.43 and 12) passed as two grounded parts.
+    src = _source([{"Stations Name": "Nivelles", "avg_delay_minutes": 4.4321, "train_count": 12}])
+    assert ungrounded_figures("Le retard moyen à Nivelles est de 4,43 minutes.", src) == []
+    assert ungrounded_figures("Le taux est de 72,2 %.", _source([{"on_time_rate_pct": 72.2}])) == []
+    assert ungrounded_figures("Le retard moyen est de 4,12 minutes.", src) == ["4,12"]
+
+
+def test_three_digit_comma_group_is_still_thousands():
+    src = _source([{"n": 2520}])
+    assert ungrounded_figures("2,520 records.", src) == []
+
+
+def test_count_of_a_subset_in_words_is_flagged():
+    # From the committed weekly brief: the model counted rows sharing a date
+    # itself. "one of the stations" has no second number and stays allowed.
+    src = _source([{"n": 5}])
+    answer = "Three of the five peak delays occurred on one day."
+    assert ungrounded_figures(answer, src) == ["Three of the five"]
+    assert ungrounded_figures("Nivelles is one of the stations to watch.", src) == []
+
+
+def test_upper_case_seconds_column_is_renamed_to_minutes():
+    # The match is case-insensitive, so the rename must be too: the value was
+    # converted but the name stayed "...SECONDS", a 5-minute delay read as 5 s.
+    rows = rows_in_minutes([{"AVG(DELAY_SECONDS)": 300, "Max_Delay_Seconds": 600}])
+    assert rows == [{"AVG(DELAY_minutes)": 5.0, "Max_Delay_minutes": 10.0}]

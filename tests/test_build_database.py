@@ -123,3 +123,31 @@ def test_a_late_train_stays_in_its_planned_hour():
     assert row["Hour"] == 23
     assert row["day_of_week"] == "Sunday"
     assert row["day_number"] == 7
+
+
+def test_coordinates_with_a_decimal_comma_are_stored_as_numbers(tmp_path, monkeypatch):
+    """The export writes 50,8709 for 50.8709. Read as text, "stations.latitude"
+    averaged to its integer part and compared as a string, so
+    `latitude > 50.85` counted 27,930 stop events instead of 46,727."""
+    import build_database
+
+    (tmp_path / "stations.csv").write_text(
+        "station_id;name;stations names;latitude;longitude;wheelchair_boarding;location_type\n"
+        "gs:1;Herzogenrath;Herzogenrath;50,8709;6,0944;;0\n"
+        "gs:2;Arlon;Arlon;49,6833;5,8167;;0\n",
+        encoding="cp1252",
+    )
+    monkeypatch.setattr(build_database, "RAW_CSV_DIR", tmp_path)
+    monkeypatch.setattr(build_database, "DB_PATH", tmp_path / "out.db")
+    build_database.build_database()
+
+    conn = sqlite3.connect(tmp_path / "out.db")
+    try:
+        rows = conn.execute(
+            "SELECT typeof(latitude), latitude, longitude FROM stations ORDER BY station_id"
+        ).fetchall()
+        north = conn.execute("SELECT COUNT(*) FROM stations WHERE latitude > 50.85").fetchone()[0]
+    finally:
+        conn.close()
+    assert rows == [("real", 50.8709, 6.0944), ("real", 49.6833, 5.8167)]
+    assert north == 1
