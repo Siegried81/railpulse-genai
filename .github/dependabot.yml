@@ -1,0 +1,28 @@
+# One grouped PR per ecosystem per month, instead of one PR per package.
+# Security fixes are not delayed by this: GitHub opens those as soon as an
+# advisory is published.
+version: 2
+updates:
+  - package-ecosystem: "pip"            # requirements*.txt
+    directory: "/"
+    schedule: { interval: "monthly" }
+    open-pull-requests-limit: 1
+    groups: { all: { patterns: ["*"] } }
+
+  - package-ecosystem: "github-actions" # .github/workflows/*.yml
+    directory: "/"
+    schedule: { interval: "monthly" }
+    open-pull-requests-limit: 1
+    groups: { all: { patterns: ["*"] } }
+
+  # The pins in requirements.txt are tested on Python 3.11 (CI and the image
+  # both use it), so the base image only takes 3.11 patch updates. Moving to
+  # 3.12+ is a deliberate change: bump CI and the Dockerfile together.
+  - package-ecosystem: "docker"         # base image in Dockerfile
+    directory: "/"
+    schedule: { interval: "monthly" }
+    open-pull-requests-limit: 1
+    ignore:
+      - dependency-name: "python"
+        versions: [">=3.12"]
+    groups: { all: { patterns: ["*"] } }
