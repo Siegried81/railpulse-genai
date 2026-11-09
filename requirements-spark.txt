@@ -6,4 +6,4 @@
 # Java. Without it, SparkSession creation fails and the Spark test skips.
 #
 #   pip install -r requirements-spark.txt
-pyspark>=3.5,<4.0
+pyspark>=4.3.0,<5.0
