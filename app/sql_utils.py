@@ -6,7 +6,40 @@ harness and the Streamlit UI, so there is a single source of truth.
 import re
 
 
+def _first_statement_end(text: str) -> int:
+    """Index of the first ";" outside a quoted string or identifier, or -1.
+
+    A plain find(";") cut "WHERE name = 'a;b'" inside its literal and sent
+    a broken query on to the guardrails.
+    """
+    quote = None
+    for i, ch in enumerate(text):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "'\"`":
+            quote = ch
+        elif ch == ";":
+            return i
+    return -1
+
+
+# Where a query starts: SELECT or WITH at the start of a line. Anchoring on a
+# line start keeps a leaked sentence such as "I will select the station..."
+# from being taken as the query; the unanchored search below is only a
+# fallback for output with no query on a line of its own.
+_QUERY_START = re.compile(r"^[ \t]*(?:SELECT|WITH)\b", re.IGNORECASE | re.MULTILINE)
+
+
 def extract_sql(raw_output: str) -> str:
+    """Pull the single SQL statement (or the NO_QUERY line) out of raw model output.
+
+    Strips code fences, keeps a NO_QUERY verdict as its first line, and
+    otherwise keeps the text from the start of the query to its first
+    statement-ending ";". A WITH ... SELECT query is kept whole rather than
+    cut at its inner SELECT: the guardrails reject it with a clear reason,
+    where a truncated "SELECT ...) SELECT ..." used to fail as a syntax error.
+    """
     text = raw_output.strip()
 
     text = re.sub(r"```sql", "", text, flags=re.IGNORECASE)
@@ -16,13 +49,13 @@ def extract_sql(raw_output: str) -> str:
     if no_query_match:
         return text.split("\n")[0].strip()
 
-    semicolon_index = text.find(";")
-    if semicolon_index != -1:
-        text = text[: semicolon_index + 1]
+    start = _QUERY_START.search(text) or re.search(r"\bSELECT\b", text, re.IGNORECASE)
+    if start:
+        text = text[start.start():]
 
-    select_match = re.search(r"SELECT\b.*", text, re.IGNORECASE | re.DOTALL)
-    if select_match:
-        text = select_match.group(0)
+    end = _first_statement_end(text)
+    if end != -1:
+        text = text[: end + 1]
 
     return text.strip()
 
@@ -132,10 +165,16 @@ def ungrounded_figures(answer: str, source_text: str) -> list[str]:
     The consultant and weekly-report prompts forbid computing new numbers,
     but models still do ("roughly one in four", "about one minute more").
     This is the deterministic check behind that rule: every number in the
-    answer must match a number in source_text (the exact prompt input) up to
+    answer must match a number in source_text up to
     the answer's own rounding -- "4.4" matches 4.43, "2,520" matches 2520 --
     and derived phrasings in words are flagged outright. An empty list means
     the answer is grounded.
+
+    source_text is the evidence, not necessarily the whole prompt: for the
+    consultant it is consultant_grounding_source(), which leaves the SQL out.
+    Known limits: a whole number matches anything within 0.5 ("5" passes
+    for 4.6), and a date is checked as separate numbers, so "2026-08-06"
+    passes when 2026, 8 and 6 each appear somewhere in the source.
     """
     allowed = [_to_float(n) for n in _NUMBER.findall(source_text)]
     allowed.extend(_ALWAYS_ALLOWED)
@@ -152,17 +191,40 @@ def ungrounded_figures(answer: str, source_text: str) -> list[str]:
     return problems
 
 
+def _results_line(rows: list[dict]) -> str:
+    """The "Results" line of the consultant input, saying when rows were left out.
+
+    Only the first CONSULTANT_MAX_ROWS rows are shown. Without the "first 20
+    of N" label an answer to "which stations..." read a cut list as the whole
+    one. N is the number of rows the query returned, itself capped at
+    db.MAX_ROWS.
+    """
+    shown = _rounded(rows_in_minutes(rows[:CONSULTANT_MAX_ROWS]))
+    if len(rows) > CONSULTANT_MAX_ROWS:
+        return f"Results (first {CONSULTANT_MAX_ROWS} of {len(rows)} rows returned): {shown}"
+    return f"Results: {shown}"
+
+
 def build_consultant_input(question: str, sql: str, rows: list[dict]) -> str:
     """Build the user prompt for CONSULTANT_SYSTEM_PROMPT.
 
     Shared by the Streamlit UI and the CLI harness so both send the model
     exactly the same thing, with delays already in minutes.
     """
-    return (
-        f"Question: {question}\n"
-        f"SQL executed: {sql}\n"
-        f"Results: {_rounded(rows_in_minutes(rows[:CONSULTANT_MAX_ROWS]))}"
-    )
+    return f"Question: {question}\nSQL executed: {sql}\n{_results_line(rows)}"
+
+
+def consultant_grounding_source(question: str, rows: list[dict]) -> str:
+    """The text a consultant answer's figures must come from: question and results.
+
+    The consultant input also holds the SQL, but a constant in the query is
+    not evidence. "/ 60.0", "HAVING COUNT(*) >= 100" and "LIMIT 20" let a
+    hallucinated "60 minutes" or "100 stops" pass the check. A number the
+    user typed in the question stays allowed ("the 10 most delayed trains").
+    Built from the same pieces as build_consultant_input, so the results text
+    is identical to what the model saw.
+    """
+    return f"Question: {question}\n{_results_line(rows)}"
 
 
 def _rounded(rows: list[dict]) -> list[dict]:

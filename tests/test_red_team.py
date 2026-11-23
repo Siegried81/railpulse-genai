@@ -25,7 +25,7 @@ import sqlite3
 import pytest
 import requests
 
-from app import config, db, engine, llm_client
+from app import config, engine, llm_client
 from app.db import execute_query, get_connection
 from app.guardrails import validate_query
 from app.llm_client import looks_like_leaked_meta

@@ -10,16 +10,16 @@
 ## Supported tags
 
 - `latest`: the current `main` branch
-- `X.Y.Z` and `X`: released versions (git tags `vX.Y.Z`), the ones to pin for a stable deployment
+- `X.Y.Z` and `X`: built from a git tag `vX.Y.Z`, the ones to pin for a stable deployment. No version has been tagged yet.
 - `sha-xxxxxxx`: one specific commit
 
 ## What is it?
 
-Railway operations assistant: ask questions about Belgian rail delays in natural language and get SQL-backed answers and recommendations (DeepSeek, Groq, OpenRouter, Anthropic or Ollama).
+Railway operations assistant: ask questions about Belgian rail delays in natural language and get SQL-backed answers and recommendations (Groq, SambaNova, DeepSeek, OpenRouter or Ollama).
 
 Images from this repository:
 
-- `railpulse-genai`: Streamlit UI on 8501
+- `railpulse-genai`: Streamlit UI on 8501. The optional HTTP API (`api/`) is not in the image.
 
 ## How to use this image
 
@@ -35,8 +35,8 @@ them at run time with `-e NAME=value` or `--env-file .env` (see `.env.example` i
 
 | Variable | Purpose |
 |---|---|
-| `LLM_PROVIDER` | `auto` (Groq, then DeepSeek, OpenRouter, Ollama), `deepseek`, `groq`, `openrouter`, `anthropic` or `ollama`; the compose file forces `groq` |
-| `DEEPSEEK_API_KEY / GROQ_API_KEY / ...` | key for the chosen provider |
+| `LLM_PROVIDER` | `auto` (Groq, then SambaNova, DeepSeek, OpenRouter, Ollama), `groq`, `sambanova`, `deepseek`, `openrouter`, `ollama` or `anthropic`; the compose file forces `groq` |
+| `GROQ_API_KEY / SAMBANOVA_API_KEY / DEEPSEEK_API_KEY / ...` | key for the chosen provider |
 | `DB_PATH` | SQLite database path, default `data/railpulse_ai.db` |
 
 ## Volumes

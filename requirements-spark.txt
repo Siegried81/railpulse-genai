@@ -2,7 +2,7 @@
 # build_database.py, tests/) needs nothing here -- keep using requirements.txt
 # and requirements-dev.txt for those.
 #
-# PySpark also needs a Java runtime (JDK 8/11/17) on PATH; pip cannot install
+# PySpark 4 also needs Java 17 or newer (JAVA_HOME or PATH); pip cannot install
 # Java. Without it, SparkSession creation fails and the Spark test skips.
 #
 #   pip install -r requirements-spark.txt

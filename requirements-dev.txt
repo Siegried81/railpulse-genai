@@ -6,5 +6,9 @@ pytest
 # prefers httpx2; the deprecation warning is harmless here.
 httpx==0.28.1
 
+# Lint (rules in ruff.toml) and the coverage floor CI enforces.
+ruff==0.17.6
+pytest-cov==7.1.0
+
 # VS Code debugger, used by docker-compose.debug.yml
 debugpy>=1.8.22,<2

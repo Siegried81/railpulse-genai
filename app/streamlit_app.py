@@ -209,6 +209,8 @@ with st.sidebar:
             - Direction-level data is unavailable.
             - Wheelchair accessibility data is not meaningfully populated in the
               source feed.
+            - Cancellations are 0 for every record: the source feed does not
+              report them, so "no cancellations" is not a real finding.
             - Data covers **2026-07-27 to 2026-08-07** only (fixed historical
               snapshot, not real-time).
             """

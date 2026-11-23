@@ -1,0 +1,9 @@
+# Lint rules CI enforces: pyflakes (F) and pycodestyle's error classes
+# (E4, E7, E9). They catch real bugs (undefined names, unused imports,
+# syntax errors), not formatting taste. ruff's own default set grew in recent
+# versions, so the selection is pinned here instead of left to the default.
+target-version = "py311"
+extend-exclude = [".venv-wsl", ".venv-zen"]
+
+[lint]
+select = ["E4", "E7", "E9", "F"]

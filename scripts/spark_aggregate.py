@@ -39,6 +39,8 @@ reference pipeline reads. OUTPUT defaults to parquet.
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 from typing import Sequence
 
 from pyspark.sql import DataFrame, SparkSession
@@ -70,10 +72,8 @@ def keep_latest_snapshot(
     keeps it. A second order key on the original input position (descending)
     pins the tie-break: when two polls share a timestamp, the row that appeared
     later in the input wins, so the result is deterministic rather than left to
-    Spark's scan order. Pandas' default sort is not stable, so its
-    drop_duplicates(keep="last") does not guarantee that same choice on a tie;
-    the two can differ only on the rare stop events that carry two polls at the
-    same pulled_at with different readings.
+    Spark's scan order. The pandas version sorts stably, so its
+    drop_duplicates(keep="last") makes the same choice on a tie.
 
     sort_col is parsed with an explicit day-first format for the reason given
     in the module docstring; an unparseable value becomes null and sorts last
@@ -88,7 +88,10 @@ def keep_latest_snapshot(
     stop event.
     """
     group_cols = list(group_cols)
-    parsed_ts = F.to_timestamp(F.col(sort_col), ts_format)
+    # try_to_timestamp, not to_timestamp: Spark 4 runs in ANSI mode, where
+    # to_timestamp raises on an unparseable value and fails the whole job
+    # instead of returning the null this ordering relies on.
+    parsed_ts = F.try_to_timestamp(F.col(sort_col), F.lit(ts_format))
 
     # A stable per-row id for the tie-break. monotonically_increasing_id() is
     # monotonic with the input order within a partition, which is what pandas'
@@ -114,7 +117,13 @@ def build_spark(app_name: str = "railpulse-snapshot-collapse") -> SparkSession:
 
     There is one machine here, so local[*] is all the script needs. It shows
     the same reduction in Spark; it doesn't stand up a cluster.
+
+    The Python workers run on this interpreter (sys.executable). Left to
+    itself, Spark starts whatever "python" is on PATH; on Windows that is
+    often not the venv, and every task fails with "Python worker failed to
+    connect back". setdefault keeps a PYSPARK_PYTHON the caller already set.
     """
+    os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
     return (
         SparkSession.builder.appName(app_name)
         .master("local[*]")

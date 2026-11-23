@@ -28,7 +28,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The same lint + test job as ci.yml, called rather than copied. Without it
+  # an image could be pushed from a commit whose suite was red.
+  test:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
   publish:
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false    # one broken image must not block the others

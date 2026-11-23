@@ -4,9 +4,13 @@ Build railpulse_ai.db (SQLite) from CSV files exported out of Power BI.
 Usage:
     python scripts/build_database.py
 
-Expects CSVs in data/ and writes data/railpulse_ai.db
+Expects CSVs in data/ and writes data/railpulse_ai.db. The new database is
+built in a temporary file and checked (check_database) before it replaces the
+old one, so a failed or inconsistent build leaves the previous database in
+place instead of deleting it first.
 """
 
+import os
 import sqlite3
 import sys
 import pandas as pd
@@ -17,7 +21,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # repo root so the table list can come from app.guardrails.
 sys.path.insert(0, str(BASE_DIR))
 
-from app.guardrails import KNOWN_TABLES  # noqa: E402
+from app.guardrails import KNOWN_COLUMNS, KNOWN_TABLES  # noqa: E402
 
 RAW_CSV_DIR = BASE_DIR / "data"
 DB_PATH = BASE_DIR / "data" / "railpulse_ai.db"
@@ -67,6 +71,24 @@ DEDUP_KEY_BY_TABLE = {
 # is 7 August, not 8 July.
 EXPORT_DATETIME_FORMAT = "%d/%m/%Y %H:%M"
 
+# "Delay Severity" comes ready-made from the Power BI export; it is not derived
+# here. Each label and the delay_seconds range it must cover, so a change in
+# the export's banding fails the build instead of passing silently. Measured on
+# the shipped data: 900 s (15 min exactly) is "Moderate", hence the bound of
+# 901 there and for "Severe".
+SEVERITY_BANDS = {
+    "On Time (<2min)": (None, 120),     # delay_seconds < 120
+    "Minor (2-5min)": (120, 300),       # 120 <= delay_seconds < 300
+    "Moderate (5-15min)": (300, 901),   # 300 <= delay_seconds <= 900
+    "Severe (>15min)": (901, None),     # delay_seconds > 900
+}
+
+# No index is created. Measured on the shipped data: every few-shot query ran
+# in 0.54 s or less without one (SQLite builds automatic indexes for the
+# train_category JOIN), well inside db.MAX_QUERY_SECONDS. Indexes on trips and
+# routes cut that JOIN to 0.25 s but added 9 MB to a database that is
+# committed to git and copied into the Docker image.
+
 
 def restore_planned_time(df: pd.DataFrame) -> pd.DataFrame:
     """Rewrite scheduled_time as the timetable time and re-derive Hour from it.
@@ -102,25 +124,100 @@ def keep_latest_snapshot(df: pd.DataFrame, group_cols: list[str], sort_col: str)
     "01/08/2026" is read month-first, every day above 12 then fails to parse,
     and those NaT rows sort last -- so they would be kept as the "latest"
     snapshot whatever their real time.
+
+    The sort is stable, so when two polls of one stop event share the same
+    timestamp the one that comes later in the input wins. The default
+    quicksort left that choice to the sort algorithm; the Spark mirror
+    (scripts/spark_aggregate.py) uses input order, so both now keep the same
+    row on a tie.
     """
     sort_dt = pd.to_datetime(df[sort_col], format=EXPORT_DATETIME_FORMAT, errors="coerce")
     return (
         df.assign(_sort_dt=sort_dt)
-        .sort_values("_sort_dt")
+        .sort_values("_sort_dt", kind="stable")
         .drop_duplicates(subset=group_cols, keep="last")
         .drop(columns="_sort_dt")
     )
 
 
-def build_database() -> None:
-    if DB_PATH.exists():
-        DB_PATH.unlink()
-        print(f"Removed existing database at {DB_PATH}")
+def check_database(conn: sqlite3.Connection) -> list[str]:
+    """Return every broken invariant of a freshly built database ([] when sound).
 
-    conn = sqlite3.connect(DB_PATH)
+    These are the facts the app's prompts, guardrails and figures rely on:
+    one row per stop event, no missing key or delay, the four exact
+    "Delay Severity" labels each covering its own delay range, ISO dates, and
+    a column list equal to guardrails.KNOWN_COLUMNS, so a renamed or new CSV
+    column cannot drift away from the whitelist unnoticed.
+    """
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    missing = set(KNOWN_TABLES) - tables
+    if missing:
+        return [f"missing tables: {sorted(missing)}"]
+
+    problems = []
+    columns = {r[1].lower() for t in KNOWN_TABLES for r in conn.execute(f'PRAGMA table_info("{t}")')}
+    if columns != KNOWN_COLUMNS:
+        problems.append(
+            "columns differ from guardrails.KNOWN_COLUMNS: only in DB "
+            f"{sorted(columns - KNOWN_COLUMNS)}, only in whitelist {sorted(KNOWN_COLUMNS - columns)}"
+        )
+
+    key_cols, _ = DEDUP_KEY_BY_TABLE["liveboard_records"]
+    key_sql = ", ".join(f'"{c}"' for c in key_cols)
+    (dupes,) = conn.execute(
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM liveboard_records GROUP BY {key_sql} HAVING COUNT(*) > 1)"
+    ).fetchone()
+    if dupes:
+        problems.append(f"{dupes} stop events appear more than once on {key_cols}")
+
+    for col in [*key_cols, "delay_seconds", "Delay Severity"]:
+        (nulls,) = conn.execute(f'SELECT COUNT(*) FROM liveboard_records WHERE "{col}" IS NULL').fetchone()
+        if nulls:
+            problems.append(f'{nulls} rows with a NULL "{col}"')
+
+    (bad_dates,) = conn.execute(
+        'SELECT COUNT(*) FROM liveboard_records WHERE "Scheduled Date" '
+        "NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'"
+    ).fetchone()
+    if bad_dates:
+        problems.append(f'{bad_dates} rows whose "Scheduled Date" is not YYYY-MM-DD')
+
+    labels = {r[0] for r in conn.execute('SELECT DISTINCT "Delay Severity" FROM liveboard_records')}
+    unknown = labels - set(SEVERITY_BANDS) - {None}
+    if unknown:
+        problems.append(f"unknown Delay Severity labels: {sorted(unknown)}")
+    for label, (low, high) in SEVERITY_BANDS.items():
+        outside = []
+        if low is not None:
+            outside.append(f"delay_seconds < {low}")
+        if high is not None:
+            outside.append(f"delay_seconds >= {high}")
+        (n,) = conn.execute(
+            f'SELECT COUNT(*) FROM liveboard_records WHERE "Delay Severity" = ? AND ({" OR ".join(outside)})',
+            (label,),
+        ).fetchone()
+        if n:
+            problems.append(f"{n} rows labelled '{label}' have a delay outside its range")
+    return problems
+
+
+def build_database(db_path: Path | None = None, csv_dir: Path | None = None) -> None:
+    """Build the database from the CSV exports, check it, then swap it in.
+
+    The paths default to the module's DB_PATH and RAW_CSV_DIR, read at call
+    time rather than bound as default values, so a test that points them at
+    tmp_path can never fall through to the real data/ folder.
+    """
+    db_path = Path(db_path or DB_PATH)
+    csv_dir = Path(csv_dir or RAW_CSV_DIR)
+    tmp_path = db_path.with_name(db_path.name + ".tmp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+
+    conn = sqlite3.connect(tmp_path)
 
     for table_name, csv_filename in TABLES.items():
-        csv_path = RAW_CSV_DIR / csv_filename
+        csv_path = csv_dir / csv_filename
 
         if not csv_path.exists():
             print(f"⚠️  Skipping '{table_name}': file not found at {csv_path}")
@@ -166,8 +263,19 @@ def build_database() -> None:
         print(f"   Columns: {list(df.columns)}")
 
     conn.commit()
+
+    problems = check_database(conn)
     conn.close()
-    print(f"\nDatabase built at: {DB_PATH}")
+    if problems:
+        raise SystemExit(
+            "Build checks failed; the existing database was left untouched:\n- "
+            + "\n- ".join(problems)
+            + f"\n(the rejected build is at {tmp_path})"
+        )
+    print("✅ Checks passed: one row per stop event, no NULL key or delay, severity labels match their ranges")
+
+    os.replace(tmp_path, db_path)
+    print(f"\nDatabase built at: {db_path}")
 
 
 if __name__ == "__main__":
