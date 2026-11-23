@@ -1,11 +1,17 @@
 """
 Provider-agnostic LLM client.
 
-call_llm(system_prompt, user_prompt) always returns a plain string,
-regardless of which backend is configured in config.LLM_PROVIDER.
-With LLM_PROVIDER="auto", providers are tried in config.AUTO_PROVIDER_ORDER
-(Groq with key rotation, then DeepSeek, then OpenRouter, then a local Ollama);
-LAST_ANSWERED_BY and the audit log record which one actually answered.
+call_llm(system_prompt, user_prompt) returns the answer text as an LLMAnswer:
+a plain str that also carries `.answered_by` ("provider · model"), whichever
+backend is configured in config.LLM_PROVIDER. With LLM_PROVIDER="auto",
+providers are tried in config.AUTO_PROVIDER_ORDER (Groq with key rotation,
+then SambaNova, DeepSeek, OpenRouter and a local Ollama).
+
+Which model answered travels on the returned string rather than only in a
+module global: the API serves requests from a thread pool and Streamlit runs
+each session in its own thread, so a global written by one request could be
+read by another. LAST_ANSWERED_BY is still set for the single-threaded CLI
+scripts.
 
 Speed optimizations:
 - `stop` sequences let the generation halt as soon as the model finishes
@@ -21,12 +27,19 @@ Speed optimizations:
 Robustness:
 - LLMConnectionError is raised (instead of an unhandled requests
   exception bubbling up as a raw traceback) whenever the configured
-  backend can't be reached -- e.g. Ollama isn't running, or a hosted
-  API key/network is misconfigured. Callers (the Streamlit UI, the CLI
-  test harness) can catch this one exception type regardless of provider.
+  backend can't be reached, answers with a malformed body, or stops at
+  max_tokens before finishing. Callers catch this one exception type
+  regardless of provider, and "auto" moves on to the next provider.
+
+Observability: every real provider call writes one LLM_CALL line to the
+audit log with provider, model, a hash of the prompt pair, attempt, latency,
+token usage and outcome, so a bad answer can be traced to the exact prompt
+version and model that produced it. Cache hits make no call and log no
+LLM_CALL line; LLM_ANSWERED is logged for every call_llm(), hit or not.
 """
 
 from functools import lru_cache
+import hashlib
 import logging
 import re
 import time
@@ -36,10 +49,26 @@ from app import config
 
 logger = logging.getLogger(__name__)
 
-# "provider · model" of the last call_llm() answer (cache hits included), so
-# callers can record which model actually answered -- with "auto", that is
-# not necessarily the first provider in the chain.
+# "provider · model" of the last call_llm() answer (cache hits included), for
+# the single-threaded CLI scripts. Code that can run concurrently (the engine,
+# so the UI and the API) reads LLMAnswer.answered_by instead.
 LAST_ANSWERED_BY: str | None = None
+
+
+class LLMAnswer(str):
+    """The answer text, plus which "provider · model" produced it.
+
+    A str subclass so every caller that treats the answer as text keeps
+    working unchanged, while the engine can read who answered from the value
+    itself instead of from a module global shared between threads.
+    """
+
+    answered_by: str | None = None
+
+    def __new__(cls, text: str, answered_by: str | None):
+        obj = super().__new__(cls, text)
+        obj.answered_by = answered_by
+        return obj
 
 
 class LLMConnectionError(Exception):
@@ -111,7 +140,7 @@ def call_llm(
     stop: tuple[str, ...] | None = None,
     max_tokens: int | None = None,
     _attempt: int = 0,
-) -> str:
+) -> LLMAnswer:
     """Route the call to whichever provider is configured.
 
     `stop` must be a tuple (not a list) so the call is hashable for caching.
@@ -125,7 +154,7 @@ def call_llm(
     )
     LAST_ANSWERED_BY = answered_by
     logger.info(f"LLM_ANSWERED | by={answered_by} | attempt={_attempt}")
-    return _strip_reasoning_leak(text)
+    return LLMAnswer(_strip_reasoning_leak(text), answered_by)
 
 
 def call_llm_until(
@@ -135,7 +164,7 @@ def call_llm_until(
     stop: tuple[str, ...] | None = None,
     max_tokens: int | None = None,
     max_attempts: int = 3,
-) -> str:
+) -> LLMAnswer:
     """Call the LLM, retrying (bypassing the cache each time) while
     is_valid(result) is False. Free-tier auto-routers (e.g. OpenRouter's
     openrouter/free) occasionally land on a flaky backing model even at
@@ -149,7 +178,7 @@ def call_llm_until(
     LLMConnectionError (bad key, backend down, etc.) is re-raised right
     away since retrying won't fix it.
     """
-    result = ""
+    result = LLMAnswer("", None)
     for attempt in range(max_attempts):
         try:
             result = call_llm(system_prompt, user_prompt, stop=stop, max_tokens=max_tokens, _attempt=attempt)
@@ -169,25 +198,67 @@ def _model_of(provider: str) -> str:
         "groq": config.GROQ_MODEL,
         "ollama": config.OLLAMA_MODEL,
         "openrouter": config.OPENROUTER_MODEL,
+        "sambanova": config.SAMBANOVA_MODEL,
         "anthropic": config.ANTHROPIC_MODEL,
     }.get(provider, "unknown")
 
 
+def _prompt_hash(system_prompt: str, user_prompt: str) -> str:
+    """Short, stable fingerprint of a prompt pair for the audit log.
+
+    The log keeps no prompt text (the user prompt holds the question and the
+    rows), but a hash still tells whether two answers came from the same
+    prompt version.
+    """
+    digest = hashlib.sha256(f"{system_prompt}\x00{user_prompt}".encode("utf-8"))
+    return digest.hexdigest()[:12]
+
+
 def _call_one_provider(
-    provider: str, system_prompt: str, user_prompt: str, stop: tuple[str, ...] | None, max_tokens: int | None
+    provider: str,
+    system_prompt: str,
+    user_prompt: str,
+    stop: tuple[str, ...] | None,
+    max_tokens: int | None,
+    attempt: int = 0,
 ) -> str:
-    if provider == "deepseek":
-        return _call_deepseek(system_prompt, user_prompt, stop, max_tokens)
-    elif provider == "ollama":
-        return _call_ollama(system_prompt, user_prompt, stop, max_tokens)
-    elif provider == "groq":
-        return _call_groq(system_prompt, user_prompt, stop, max_tokens)
-    elif provider == "openrouter":
-        return _call_openrouter(system_prompt, user_prompt, stop, max_tokens)
-    elif provider == "anthropic":
-        return _call_anthropic(system_prompt, user_prompt, stop, max_tokens)
-    else:
+    """Call one provider, log one LLM_CALL line, and return the answer text.
+
+    A response body that does not have the expected shape (a KeyError, an
+    IndexError, invalid JSON...) is turned into an LLMConnectionError, so
+    "auto" falls back to the next provider instead of crashing on it.
+    """
+    providers = {
+        "deepseek": _call_deepseek,
+        "ollama": _call_ollama,
+        "groq": _call_groq,
+        "openrouter": _call_openrouter,
+        "sambanova": _call_sambanova,
+        "anthropic": _call_anthropic,
+    }
+    if provider not in providers:
         raise ValueError(f"Unknown LLM_PROVIDER: {provider}")
+
+    started = time.monotonic()
+    usage: dict = {}
+    outcome = "ok"
+    try:
+        try:
+            text, usage = providers[provider](system_prompt, user_prompt, stop, max_tokens)
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            raise LLMConnectionError(f"{provider} returned a malformed response: {e!r}") from e
+    except LLMConnectionError as e:
+        outcome = f"{type(e).__name__}: {str(e)[:400]}"
+        raise
+    finally:
+        logger.info(
+            f"LLM_CALL | provider={provider} | model={_model_of(provider)}"
+            f" | prompt_sha={_prompt_hash(system_prompt, user_prompt)} | attempt={attempt}"
+            f" | latency_ms={round((time.monotonic() - started) * 1000)}"
+            f" | prompt_tokens={usage.get('prompt_tokens')}"
+            f" | completion_tokens={usage.get('completion_tokens')} | outcome={outcome}"
+        )
+    return text
 
 
 @lru_cache(maxsize=256)
@@ -203,18 +274,20 @@ def _call_llm_cached(
 
     With provider "auto", config.AUTO_PROVIDER_ORDER is tried in turn and the
     first provider that answers wins. Any LLMConnectionError moves on to the
-    next one. If all fail, the error is a rate limit only when every provider
-    was rate-limited (so call_llm_until() backs off and retries), otherwise a
-    plain connection error listing each provider's failure.
+    next one. If all fail and at least one of them was rate-limited, the
+    error is a rate limit, so call_llm_until() backs off and retries: waiting
+    can free that provider, whereas the others (no key, server down) would
+    fail the same way again. Otherwise it is a plain connection error listing
+    each provider's failure.
     """
     if provider != "auto":
-        text = _call_one_provider(provider, system_prompt, user_prompt, stop, max_tokens)
+        text = _call_one_provider(provider, system_prompt, user_prompt, stop, max_tokens, _attempt)
         return text, f"{provider} · {_model_of(provider)}"
 
     errors: list[tuple[str, LLMConnectionError]] = []
     for candidate in config.AUTO_PROVIDER_ORDER:
         try:
-            text = _call_one_provider(candidate, system_prompt, user_prompt, stop, max_tokens)
+            text = _call_one_provider(candidate, system_prompt, user_prompt, stop, max_tokens, _attempt)
         except LLMConnectionError as e:
             logger.info(f"LLM_FALLBACK | provider={candidate} | error={e}")
             errors.append((candidate, e))
@@ -222,14 +295,36 @@ def _call_llm_cached(
         return text, f"{candidate} · {_model_of(candidate)}"
 
     summary = " | ".join(f"{name}: {e}" for name, e in errors)
-    if all(isinstance(e, LLMRateLimitError) for _, e in errors):
-        raise LLMRateLimitError(f"Every provider is rate-limited. {summary}")
+    if any(isinstance(e, LLMRateLimitError) for _, e in errors):
+        raise LLMRateLimitError(f"No provider answered and at least one is rate-limited. {summary}")
     raise LLMConnectionError(f"No LLM provider answered. {summary}")
+
+
+def _error_detail(response) -> str:
+    """The provider's own error message from an HTTP error body, or "".
+
+    A 429 says which limit was hit (per minute or per day, tokens or
+    requests) only in its body. Without it a run that stays rate-limited for
+    ten minutes cannot be told apart from a burst that clears in one.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    error = body.get("error") if isinstance(body, dict) else None
+    message = error.get("message") if isinstance(error, dict) else error
+    return f" Provider said: {str(message)[:300]}" if message else ""
+
+
+def _openai_usage(data: dict) -> dict:
+    """Token counts from an OpenAI-compatible response, {} when absent."""
+    usage = data.get("usage") or {}
+    return {k: usage.get(k) for k in ("prompt_tokens", "completion_tokens")}
 
 
 def _call_ollama(
     system_prompt: str, user_prompt: str, stop: tuple[str, ...] | None, max_tokens: int | None
-) -> str:
+) -> tuple[str, dict]:
     options = {"temperature": 0}
     if max_tokens:
         options["num_predict"] = max_tokens
@@ -254,7 +349,6 @@ def _call_ollama(
         response.raise_for_status()
     except requests.exceptions.ConnectionError as e:
         raise LLMConnectionError(
-            
             f"Can't reach Ollama at {config.OLLAMA_BASE_URL}. Make sure it's running "
             f"(`ollama serve`) and that the model is pulled (`ollama pull {config.OLLAMA_MODEL}`)."
         ) from e
@@ -266,12 +360,17 @@ def _call_ollama(
     except requests.exceptions.RequestException as e:
         raise LLMConnectionError(f"Ollama request failed: {e}") from e
 
-    return response.json()["message"]["content"].strip()
+    data = response.json()
+    # Ollama reports a generation stopped by num_predict as done_reason "length".
+    if data.get("done_reason") == "length":
+        raise LLMConnectionError(f"Ollama answer was cut off at max_tokens={max_tokens} before it finished.")
+    usage = {"prompt_tokens": data.get("prompt_eval_count"), "completion_tokens": data.get("eval_count")}
+    return data["message"]["content"].strip(), usage
 
 
 def _call_deepseek(
     system_prompt: str, user_prompt: str, stop: tuple[str, ...] | None, max_tokens: int | None
-) -> str:
+) -> tuple[str, dict]:
     """Call DeepSeek's hosted API (OpenAI-compatible).
 
     `stop` is passed through: DeepSeek returns its reasoning in a separate
@@ -308,10 +407,60 @@ def _call_deepseek(
         if response.status_code == 402:
             raise LLMConnectionError("DeepSeek account balance is insufficient.") from e
         if response.status_code == 429:
-            raise LLMRateLimitError("DeepSeek rate limit hit. Wait a moment and try again.") from e
+            raise LLMRateLimitError(f"DeepSeek rate limit hit. Wait a moment and try again.{_error_detail(response)}") from e
         raise LLMConnectionError(f"DeepSeek API error (model '{config.DEEPSEEK_MODEL}'): {e}") from e
 
-    return _complete_content(response.json(), "DeepSeek", max_tokens)
+    data = response.json()
+    return _complete_content(data, "DeepSeek", max_tokens), _openai_usage(data)
+
+
+def _call_sambanova(
+    system_prompt: str, user_prompt: str, stop: tuple[str, ...] | None, max_tokens: int | None
+) -> tuple[str, dict]:
+    """Call SambaNova Cloud (OpenAI-compatible chat completions).
+
+    Second in "auto", after Groq: a free cloud tier with its own quota, so a
+    Groq rate limit does not have to fall through to the paid DeepSeek
+    credit. With no key configured it fails before any HTTP call, so "auto"
+    skips it at no cost.
+    """
+    if not config.SAMBANOVA_API_KEY:
+        raise LLMConnectionError("No SambaNova API key configured (set SAMBANOVA_API_KEY in .env).")
+
+    payload = {
+        "model": config.SAMBANOVA_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0,
+    }
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
+    if stop:
+        payload["stop"] = list(stop)
+
+    try:
+        response = requests.post(
+            config.SAMBANOVA_URL,
+            headers={"Authorization": f"Bearer {config.SAMBANOVA_API_KEY}"},
+            json=payload,
+            timeout=60,
+        )
+        response.raise_for_status()
+    except requests.exceptions.ConnectionError as e:
+        raise LLMConnectionError("Can't reach SambaNova's API. Check your internet connection.") from e
+    except requests.exceptions.Timeout as e:
+        raise LLMConnectionError("SambaNova API timed out after 60s.") from e
+    except requests.exceptions.HTTPError as e:
+        if response.status_code in (401, 403):
+            raise LLMConnectionError("SambaNova API key is missing or invalid (check SAMBANOVA_API_KEY in .env).") from e
+        if response.status_code == 429:
+            raise LLMRateLimitError(f"SambaNova rate limit hit. Wait a moment and try again.{_error_detail(response)}") from e
+        raise LLMConnectionError(f"SambaNova API error (model '{config.SAMBANOVA_MODEL}'): {e}") from e
+
+    data = response.json()
+    return _complete_content(data, "SambaNova", max_tokens), _openai_usage(data)
 
 
 # Index into config.GROQ_API_KEYS of the key that last answered, so the next
@@ -321,14 +470,17 @@ _groq_key_index = 0
 
 def _call_groq(
     system_prompt: str, user_prompt: str, stop: tuple[str, ...] | None, max_tokens: int | None
-) -> str:
+) -> tuple[str, dict]:
     """Call Groq, rotating through config.GROQ_API_KEYS.
 
-    Each free-tier key has its own tokens-per-minute quota (checked: a key
-    drained by earlier calls did not reduce the others), and one Text-to-SQL
-    call is ~2.3K prompt tokens against an 8K/minute limit. So on a 429 or a
-    rejected key, the next key is tried; any other error is raised at once,
-    since another key would not fix a bad model name or an outage.
+    Groq's free tier caps gpt-oss-120b at 8K tokens a minute and 200,000
+    tokens a day, and its 429 names the organization the limit applies to: at
+    least the daily cap is shared by every key of one Groq account. Extra keys
+    therefore add capacity only when they come from different accounts. One
+    Text-to-SQL call is about 3.7K prompt tokens (3,732 to 3,747 measured), so
+    one organization serves about 50 questions a day. On a 429 or a rejected
+    key the next key is tried; any other error is raised at once, since
+    another key would not fix a bad model name or an outage.
     """
     global _groq_key_index
     keys = config.GROQ_API_KEYS
@@ -347,7 +499,9 @@ def _call_groq(
         return result
 
     if isinstance(last_error, LLMRateLimitError):
-        raise LLMRateLimitError(f"All {len(keys)} Groq keys are rate-limited. Wait a minute and try again.")
+        raise LLMRateLimitError(
+            f"All {len(keys)} Groq keys are rate-limited. Wait a minute and try again. Last key: {last_error}"
+        )
     raise LLMConnectionError(f"No working Groq key among {len(keys)}: {last_error}")
 
 
@@ -357,7 +511,7 @@ class _LLMInvalidKeyError(LLMConnectionError):
 
 def _call_groq_with_key(
     api_key: str, system_prompt: str, user_prompt: str, stop: tuple[str, ...] | None, max_tokens: int | None
-) -> str:
+) -> tuple[str, dict]:
     """Call Groq's free-tier hosted inference API (OpenAI-compatible) with one key.
 
     gpt-oss models reason before answering, and that reasoning counts against
@@ -402,10 +556,13 @@ def _call_groq_with_key(
                 f"Groq model '{config.GROQ_MODEL}' not found (check GROQ_MODEL in .env)."
             ) from e
         if response.status_code == 429:
-            raise LLMRateLimitError("Groq free-tier rate limit hit. Wait a moment and try again.") from e
+            raise LLMRateLimitError(
+                f"Groq free-tier rate limit hit. Wait a moment and try again.{_error_detail(response)}"
+            ) from e
         raise LLMConnectionError(f"Groq API error: {e}") from e
 
-    return _complete_content(response.json(), "Groq", max_tokens)
+    data = response.json()
+    return _complete_content(data, "Groq", max_tokens), _openai_usage(data)
 
 
 def _complete_content(data: dict, provider_name: str, max_tokens: int | None) -> str:
@@ -427,11 +584,13 @@ def _complete_content(data: dict, provider_name: str, max_tokens: int | None) ->
 
 def _call_openrouter(
     system_prompt: str, user_prompt: str, stop: tuple[str, ...] | None, max_tokens: int | None
-) -> str:
+) -> tuple[str, dict]:
     """Call OpenRouter's OpenAI-compatible API. Free-tier fallback for Groq.
 
     Sign in at https://openrouter.ai/keys (Google/GitHub/email) and pick any
     model with a ":free" suffix, e.g. "meta-llama/llama-3.1-8b-instruct:free".
+    Only the `content` field is used: the `reasoning` field holds the model's
+    chain of thought, which is not an answer even when content is empty.
     """
     payload = {
         "model": config.OPENROUTER_MODEL,
@@ -483,21 +642,19 @@ def _call_openrouter(
     if "error" in data:
         raise LLMConnectionError(f"OpenRouter API error: {data['error'].get('message', data['error'])}")
 
-    message = data["choices"][0]["message"]
-    content = message.get("content") or message.get("reasoning") or ""
-    if not content.strip():
+    content = _complete_content(data, "OpenRouter", max_tokens)
+    if not content:
         raise LLMConnectionError(
             "OpenRouter returned an empty response (the free model may be overloaded). "
             "Try again, or set OPENROUTER_MODEL to a specific model in openrouter.ai/models "
             "instead of the openrouter/free auto-router."
         )
-    return content.strip()
-
+    return content, _openai_usage(data)
 
 
 def _call_anthropic(
     system_prompt: str, user_prompt: str, stop: tuple[str, ...] | None, max_tokens: int | None
-) -> str:
+) -> tuple[str, dict]:
     """Call Claude via the Anthropic API (used for prototyping only)."""
     payload = {
         "model": config.ANTHROPIC_MODEL,
@@ -531,4 +688,11 @@ def _call_anthropic(
             raise LLMRateLimitError("Anthropic API rate limit hit. Wait a moment and try again.") from e
         raise LLMConnectionError(f"Anthropic API error: {e}") from e
 
-    return response.json()["content"][0]["text"].strip()
+    data = response.json()
+    if data.get("stop_reason") == "max_tokens":
+        raise LLMConnectionError(f"Anthropic answer was cut off at max_tokens={payload['max_tokens']} before it finished.")
+    usage = data.get("usage") or {}
+    return data["content"][0]["text"].strip(), {
+        "prompt_tokens": usage.get("input_tokens"),
+        "completion_tokens": usage.get("output_tokens"),
+    }

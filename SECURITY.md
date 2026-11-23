@@ -27,9 +27,10 @@ way, and it will be revoked rather than merely deleted.
 
 ## What is in scope here
 
-- The model writes SQL. It runs on a read-only SQLite connection, behind an
-  allow-list of a single `SELECT` and a column check.
+- The model writes SQL. It runs on a read-only SQLite connection with a 5 s
+  budget, behind an allow-list of a single `SELECT`, a table allow-list and a
+  column check.
 - In scope: any query that writes, reads a table outside the schema, runs
   unbounded, or returns a figure the rows do not contain.
-- Keys: `GROQ_API_KEY*`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`,
-  `OPENROUTER_API_KEY`; none is needed with a local Ollama.
+- Keys: `GROQ_API_KEY*`, `SAMBANOVA_API_KEY`, `DEEPSEEK_API_KEY`,
+  `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`; none is needed with a local Ollama.

@@ -17,7 +17,7 @@ from app.prompts import (
     SQL_MAX_TOKENS,
     TEXT_TO_SQL_SYSTEM_PROMPT,
 )
-from app.sql_utils import extract_sql, build_consultant_input, ungrounded_figures
+from app.sql_utils import extract_sql, build_consultant_input, consultant_grounding_source, ungrounded_figures
 
 
 def ask(question: str) -> None:
@@ -48,14 +48,15 @@ def ask(question: str) -> None:
     print(f"📊 Raw results ({len(rows)} rows): {rows[:5]}\n")
 
     consultant_input = build_consultant_input(question, sql, rows)
+    evidence = consultant_grounding_source(question, rows)
     answer = call_llm_until(
         CONSULTANT_SYSTEM_PROMPT,
         consultant_input,
-        is_valid=lambda s: not looks_like_leaked_meta(s) and not ungrounded_figures(s, consultant_input),
+        is_valid=lambda s: not looks_like_leaked_meta(s) and not ungrounded_figures(s, evidence),
         max_tokens=CONSULTANT_MAX_TOKENS,
     )
     print(f"💬 RailPulse Consultant says ({llm_client.LAST_ANSWERED_BY}):\n{answer}\n")
-    ungrounded = ungrounded_figures(answer, consultant_input)
+    ungrounded = ungrounded_figures(answer, evidence)
     if ungrounded:
         print(f"⚠️  UNGROUNDED figures (not in the results): {ungrounded}\n")
 

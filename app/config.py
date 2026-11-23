@@ -15,7 +15,8 @@ def _numbered_keys(name: str, environ=os.environ) -> list[str]:
     """Collect NAME, NAME_2, NAME_3, ... (stopping at the first gap), skipping empties.
 
     Lets .env hold several free-tier keys for one provider without a code
-    change per key; each key has its own rate-limit quota.
+    change per key. A key adds rate-limit capacity only when it belongs to
+    another Groq account: Groq applies at least its daily cap per account.
     """
     keys = [environ.get(name, "")]
     i = 2
@@ -26,13 +27,14 @@ def _numbered_keys(name: str, environ=os.environ) -> list[str]:
 
 
 # --- LLM provider switch ------------------------------------------------
-# One of: "auto", "deepseek", "groq", "ollama", "openrouter", "anthropic".
+# One of: "auto", "deepseek", "groq", "ollama", "openrouter", "sambanova", "anthropic".
 # "auto" tries AUTO_PROVIDER_ORDER in turn and uses the first that answers.
-# Groq leads because its free tier costs nothing; DeepSeek (paid credit) is the
-# first fallback, then the OpenRouter free tier, then a local Ollama as a last
-# resort. A provider with no key or no local server just raises and is skipped.
+# Groq leads because its free tier costs nothing; SambaNova's free tier comes
+# next, so a Groq rate limit does not spend paid DeepSeek credit; then
+# DeepSeek, the OpenRouter free tier, and a local Ollama as a last resort.
+# A provider with no key or no local server just raises and is skipped.
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq")
-AUTO_PROVIDER_ORDER = ("groq", "deepseek", "openrouter", "ollama")
+AUTO_PROVIDER_ORDER = ("groq", "sambanova", "deepseek", "openrouter", "ollama")
 
 # --- DeepSeek (hosted, OpenAI-compatible) ---------------------------------
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
@@ -55,6 +57,11 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 # --- OpenRouter (free-tier hosted, OpenAI-compatible) ---------------------
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
+
+# --- SambaNova Cloud (free tier, OpenAI-compatible) -----------------------
+SAMBANOVA_API_KEY = os.getenv("SAMBANOVA_API_KEY", "")
+SAMBANOVA_URL = os.getenv("SAMBANOVA_URL", "https://api.sambanova.ai/v1/chat/completions")
+SAMBANOVA_MODEL = os.getenv("SAMBANOVA_MODEL", "DeepSeek-V3.1")
 
 # --- Database -------------------------------------------------------------
 DB_PATH = os.getenv("DB_PATH", "data/railpulse_ai.db")

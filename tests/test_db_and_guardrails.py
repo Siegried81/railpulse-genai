@@ -114,6 +114,12 @@ def test_a_normal_query_is_not_affected_by_the_budget(tiny_db):
         "SELECT * FROM weather",
         "SELECT * FROM liveboard_records lr JOIN users u ON lr.vehicle_id = u.id",
         "SELECT * FROM json_each('[1,2]')",
+        # a table-valued function wrapped in parentheses used to skip the
+        # allow-list, whose regex needs a bare name after FROM/JOIN
+        "SELECT * FROM (json_each('[1,2]'))",
+        "SELECT value FROM ( generate_series(1, 5) )",
+        "SELECT * FROM liveboard_records JOIN (json_each('[1]')) ON 1",
+        "SELECT * FROM (liveboard_records)",
     ],
 )
 def test_internals_dangerous_functions_and_unknown_tables_are_blocked(sql):
@@ -132,6 +138,7 @@ def test_internals_dangerous_functions_and_unknown_tables_are_blocked(sql):
             "JOIN routes r ON t.route_id = r.route_id GROUP BY r.train_category"
         ),
         "SELECT COUNT(*) FROM (SELECT station_id FROM liveboard_records GROUP BY station_id)",
+        "SELECT COUNT(*) FROM ( select station_id FROM liveboard_records )",
         "SELECT name FROM Stations",
     ],
 )
@@ -175,3 +182,27 @@ def test_quoted_column_of_a_joined_table_passes(two_table_db):
     )
     rows = db.execute_query(sql)
     assert [r["train_category"] for r in rows] == ["IC", "S"]
+
+
+def _few_shot_sql() -> list[str]:
+    import re
+    from app.prompts import TEXT_TO_SQL_SYSTEM_PROMPT
+
+    return [m.strip() for m in re.findall(r"^SQL: (SELECT .*)$", TEXT_TO_SQL_SYSTEM_PROMPT, re.MULTILINE)]
+
+
+def test_every_few_shot_query_passes_the_guardrails():
+    # A few-shot the guardrails reject teaches the model a query that can never run.
+    queries = _few_shot_sql()
+    assert len(queries) >= 10
+    for sql in queries:
+        assert validate_query(sql) == (True, ""), sql
+
+
+def test_few_shot_never_inner_joins_trips():
+    # 13,453 of the 99,014 stop events have a vehicle_id with no trip_id: a
+    # plain JOIN dropped them from every train-category figure without a word.
+    for sql in _few_shot_sql():
+        if "trips" in sql:
+            assert "LEFT JOIN trips" in sql, sql
+            assert " JOIN trips" not in sql.replace("LEFT JOIN trips", ""), sql

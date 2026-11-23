@@ -11,19 +11,21 @@ Table: liveboard_records  (main table, one row per train stop event)
   - record_id            INTEGER, primary identifier
   - station_id            TEXT, raw GTFS station id (e.g. gs:nmbssncb:8821006)
   - vehicle_id            TEXT, raw GTFS vehicle id
-  - platform               TEXT, platform number -- KNOWN DATA ISSUE: this column is EMPTY/NULL for all rows (ingestion bug). NEVER use it in WHERE/SELECT/GROUP BY for real answers. If a question asks about platforms, answer at the STATION level instead and mention platform-level data is unavailable.
+  - platform               platform number -- KNOWN DATA ISSUE: this column is EMPTY/NULL for all rows (ingestion bug). NEVER use it in WHERE/SELECT/GROUP BY for real answers. If a question asks about platforms, answer at the STATION level instead and mention platform-level data is unavailable.
   - scheduled_time         TEXT/DATETIME, scheduled departure/arrival timestamp
   - delay_seconds          INTEGER, delay in SECONDS (always convert to minutes for humans)
   - canceled               BOOLEAN (True/False), whether the stop was canceled -- KNOWN DATA ISSUE: the source GTFS-Realtime feed does not reliably report cancellations (confirmed: this column is 0/False for effectively all records in this dataset). A query returning 0 canceled trains reflects a feed limitation, not a real 100% completion rate. If asked about cancellations, answer the query but the consultant layer MUST caveat that this figure may not reflect real-world cancellations due to a known source-feed limitation.
   - pulled_at               TEXT/DATETIME, when the record was ingested
+  - "stations.station_id"   TEXT, copy of station_id (identical on every row) -- use station_id instead
   - "Stations Name"        TEXT, human-readable station name (e.g. "Anvers-Central") -- USE THIS for station names, not station_id
   - "stations.standard_name" TEXT, alternate standardized station name
   - "stations.latitude"     REAL
   - "stations.longitude"    REAL
-  - "stations.wheelchair_boarding" TEXT/INTEGER -- KNOWN DATA ISSUE: GTFS wheelchair_boarding is unpopulated/defaults to 0 ("no information") for virtually all SNCB stations in this feed, not a real accessibility signal. Do NOT present this as a reliable accessibility answer; if asked, say this data isn't meaningfully populated in the source feed.
+  - "stations.wheelchair_boarding" -- KNOWN DATA ISSUE: GTFS wheelchair_boarding is unpopulated (NULL on every row) in this feed, not a real accessibility signal. Do NOT present this as a reliable accessibility answer; if asked, say this data isn't meaningfully populated in the source feed.
   - "stations.location_type" TEXT/INTEGER
+  - "vehicles.vehicle_id"    TEXT, copy of vehicle_id (identical on every row) -- use vehicle_id instead
   - "vehicles.vehicle_type"  TEXT, type of train vehicle
-  - "vehicles.direction"     TEXT -- KNOWN DATA ISSUE: this column is EMPTY/NULL for ALL rows (confirmed at the source, not just this join). NEVER use it in WHERE/SELECT/GROUP BY. If a question asks about direction, explain that direction-level data is unavailable in this system.
+  - "vehicles.direction"     -- KNOWN DATA ISSUE: this column is EMPTY/NULL for ALL rows (confirmed at the source, not just this join). NEVER use it in WHERE/SELECT/GROUP BY. If a question asks about direction, explain that direction-level data is unavailable in this system.
   - "Hour"                  INTEGER, hour of day (0-23) extracted from scheduled_time
   - day_of_week             TEXT, one of: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday
   - day_number               INTEGER
@@ -106,6 +108,11 @@ Rules:
 - CRITICAL: for any "worst/best average delay" ranking question (ORDER BY an AVG(), then LIMIT),
   always add HAVING COUNT(*) >= {MIN_STATION_SAMPLE} in the GROUP BY. Without this, a low-traffic station
   (often a small cross-border stop) can dominate the ranking purely due to a small, unreliable sample.
+- CRITICAL: "the most delays" / "the most delayed" for a group (station, train category, hour, day,
+  date) means the HIGHEST AVERAGE DELAY, ranked with the HAVING guard above. It does NOT mean a count
+  of delayed rows: that count mostly measures how much traffic the group has, so the busiest group
+  would always win. Count rows only when the question asks for a number ("how many") or for traffic
+  ("busiest", "most stop events", "volume").
 - CRITICAL: SQLite does NOT support "INTERVAL N DAY" syntax (that is MySQL/Postgres syntax and will
   cause a syntax error here). For relative date math, ONLY use DATE(column_or_subquery, '-N days'),
   exactly like DATE(MAX("Scheduled Date"), '-6 days') in the few-shot below. Never write INTERVAL.
@@ -148,7 +155,8 @@ Q: Which station has the most train traffic (volume)?
 SQL: SELECT "Stations Name", COUNT(*) AS train_volume FROM liveboard_records GROUP BY "Stations Name" ORDER BY train_volume DESC LIMIT 10;
 
 Q: What hour of the day has the most delays?
-SQL: SELECT "Hour", COUNT(*) AS delay_count FROM liveboard_records WHERE delay_seconds > 0 GROUP BY "Hour" ORDER BY delay_count DESC LIMIT 1;
+SQL: SELECT "Hour", AVG(delay_seconds) / 60.0 AS avg_delay_minutes, COUNT(*) AS sample_size FROM liveboard_records GROUP BY "Hour" HAVING COUNT(*) >= {MIN_STATION_SAMPLE} ORDER BY avg_delay_minutes DESC LIMIT 1;
+-- NOTE: "the most delays" is the highest average delay, not the number of delayed stops: that number follows traffic, so the busiest hour would always come first. sample_size lets the answer say how many stops the average covers.
 
 Q: How does average delay compare between weekdays and weekends?
 SQL: SELECT CASE WHEN day_of_week IN ('Saturday', 'Sunday') THEN 'Weekend' ELSE 'Weekday' END AS period, AVG(delay_seconds) / 60.0 AS avg_delay_minutes FROM liveboard_records GROUP BY period;
@@ -158,8 +166,9 @@ SQL: SELECT day_of_week, AVG(delay_seconds) / 60.0 AS avg_delay_minutes FROM liv
 -- NOTE: day_of_week is included in SELECT, not just GROUP BY -- otherwise the results would be unlabeled numbers with no way to tell which day they belong to.
 
 Q: Which train category (e.g. IC, S, L) has the most delays?
-SQL: SELECT r.train_category, AVG(lr.delay_seconds) / 60.0 AS avg_delay_minutes FROM liveboard_records lr JOIN vehicles v ON lr.vehicle_id = v.vehicle_id JOIN trips t ON lr.vehicle_id = t.trip_id JOIN routes r ON t.route_id = r.route_id GROUP BY r.train_category ORDER BY avg_delay_minutes DESC;
+SQL: SELECT COALESCE(r.train_category, 'Unknown') AS train_category, AVG(lr.delay_seconds) / 60.0 AS avg_delay_minutes, COUNT(*) AS sample_size FROM liveboard_records lr LEFT JOIN trips t ON lr.vehicle_id = t.trip_id LEFT JOIN routes r ON t.route_id = r.route_id GROUP BY 1 HAVING COUNT(*) >= {MIN_STATION_SAMPLE} ORDER BY avg_delay_minutes DESC LIMIT 1;
 -- NOTE: only use this JOIN pattern when the question specifically asks about train_category, IC/S/L type, or route info.
+-- NOTE: LEFT JOIN, never a plain JOIN: some vehicle_id values have no matching trip_id, and a plain JOIN silently drops those stop events from every figure. They are kept and labelled 'Unknown'.
 
 Q: Which stations have wheelchair accessible boarding?
 SQL: NO_QUERY: wheelchair_boarding data is unpopulated (defaults to "no information") for virtually all stations in this feed, so this cannot be reliably answered.
@@ -196,7 +205,9 @@ You will be given:
 1. The original question asked by the station manager
 2. The raw SQL query that was executed
 3. The resulting data (at most 20 rows). Delays in it are in minutes: any raw delay_seconds
-   column has already been replaced by delay_minutes before you see it
+   column has already been replaced by delay_minutes before you see it. When the query returned
+   more rows than you are shown, the line reads "Results (first 20 of N rows returned)": then
+   never present those rows as the complete list, say they are the first 20 of N
 
 Your job:
 - Answer the question clearly in 1-3 sentences, in plain human language (no SQL, no jargon about databases).

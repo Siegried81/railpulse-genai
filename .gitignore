@@ -21,3 +21,6 @@ data/*.csv
 powerbi/railpulse.Report/
 powerbi/railpulse.SemanticModel/
 powerbi/railpulse.pbip
+
+# pytest-cov data file
+.coverage

@@ -58,6 +58,7 @@ MAX_QUERY_LENGTH = 1000  # generous for this schema; blocks pathological queries
 KNOWN_COLUMNS = {
     "record_id", "station_id", "vehicle_id", "platform", "scheduled_time",
     "delay_seconds", "canceled", "pulled_at", "stations name",
+    "stations.station_id", "vehicles.vehicle_id",
     "stations.standard_name", "stations.latitude", "stations.longitude",
     "stations.wheelchair_boarding", "stations.location_type",
     "vehicles.vehicle_type", "vehicles.direction", "hour", "day_of_week",
@@ -131,6 +132,12 @@ def validate_query(sql: str) -> tuple[bool, str]:
     for func in DANGEROUS_FUNCTIONS:
         if re.search(rf"\b{func}\s*\(", cleaned, re.IGNORECASE):
             return False, f"Forbidden function detected: {func}"
+
+    # A parenthesis after FROM/JOIN may only open a subquery. Anything else,
+    # e.g. "FROM (json_each('[1]'))", is a table-valued function or a table
+    # hidden from the allow-list below, whose regex needs a bare name.
+    if re.search(r"\b(?:FROM|JOIN)\s*\((?!\s*SELECT\b)", cleaned, re.IGNORECASE):
+        return False, "Only a subquery may follow FROM/JOIN in parentheses"
 
     # Table allow-list: the name right after each FROM/JOIN must be a known
     # table. A subquery "FROM (SELECT ...)" is skipped here; its own FROM is

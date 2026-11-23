@@ -5,6 +5,7 @@ Tests for app/sql_utils.py: SQL extraction and the consultant input builder.
 from app.sql_utils import (
     CONSULTANT_MAX_ROWS,
     build_consultant_input,
+    consultant_grounding_source,
     extract_sql,
     rows_in_minutes,
 )
@@ -147,3 +148,35 @@ def test_upper_case_seconds_column_is_renamed_to_minutes():
     # converted but the name stayed "...SECONDS", a 5-minute delay read as 5 s.
     rows = rows_in_minutes([{"AVG(DELAY_SECONDS)": 300, "Max_Delay_Seconds": 600}])
     assert rows == [{"AVG(DELAY_minutes)": 5.0, "Max_Delay_minutes": 10.0}]
+
+
+def test_extract_sql_keeps_a_cte_whole_instead_of_cutting_at_its_inner_select():
+    # Used to return "SELECT 1 AS x) SELECT * FROM t;", a syntax error.
+    raw = "WITH t AS (SELECT 1 AS x) SELECT * FROM t;"
+    assert extract_sql(raw) == raw
+
+
+def test_extract_sql_does_not_cut_at_a_semicolon_inside_a_string():
+    raw = "SELECT * FROM stations WHERE name = 'a;b';\nextra text"
+    assert extract_sql(raw) == "SELECT * FROM stations WHERE name = 'a;b';"
+
+
+def test_extract_sql_ignores_the_word_select_in_a_leaked_sentence():
+    raw = "I will select the right station.\nSELECT 3;"
+    assert extract_sql(raw) == "SELECT 3;"
+
+
+def test_consultant_input_says_when_rows_were_left_out():
+    rows = [{"n": i} for i in range(CONSULTANT_MAX_ROWS + 17)]
+    text = build_consultant_input("q", "SELECT 1", rows)
+    assert f"first {CONSULTANT_MAX_ROWS} of {CONSULTANT_MAX_ROWS + 17} rows returned" in text
+    assert "first" not in build_consultant_input("q", "SELECT 1", rows[:CONSULTANT_MAX_ROWS])
+
+
+def test_grounding_source_leaves_the_sql_out_but_keeps_the_same_results():
+    rows = [{"delay_seconds": 600}]
+    full = build_consultant_input("top 3?", "SELECT x / 60.0 LIMIT 100", rows)
+    source = consultant_grounding_source("top 3?", rows)
+    assert "60.0" not in source and "100" not in source
+    assert source.splitlines()[-1] == full.splitlines()[-1]
+    assert "top 3?" in source

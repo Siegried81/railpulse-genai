@@ -67,6 +67,11 @@ def fake_llm_config(monkeypatch):
     monkeypatch.setattr(config, "GROQ_API_KEYS", ["test-groq-1"])
     monkeypatch.setattr(config, "GROQ_MODEL", "openai/gpt-oss-120b")
     monkeypatch.setattr(config, "OPENROUTER_API_KEY", "test-openrouter")
+    # No SambaNova key by default: in "auto" it then fails before any HTTP call
+    # and the chain moves on, so tests that mock only Groq and DeepSeek keep
+    # working. The SambaNova tests set a key themselves.
+    monkeypatch.setattr(config, "SAMBANOVA_API_KEY", "")
+    monkeypatch.setattr(config, "SAMBANOVA_MODEL", "test-sambanova-model")
     monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "test-anthropic")
     monkeypatch.setattr(llm_client, "_groq_key_index", 0)
     monkeypatch.setattr(llm_client, "LAST_ANSWERED_BY", None)

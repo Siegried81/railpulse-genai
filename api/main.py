@@ -7,7 +7,8 @@ POST /ask. It changes nothing in the Streamlit app.
 Both surfaces call app.engine.answer_question, so they can't drift. Nothing
 here re-implements a guardrail: one LLM call per step, the read-only DB and
 validate_query inside execute_query, the ungrounded_figures check (returned as
-`ungrounded`), and LAST_ANSWERED_BY as sql_by / answer_by.
+`ungrounded`), and the model that wrote each step as sql_by / answer_by (read
+from each answer, so concurrent requests cannot swap them).
 
 Outcome mapping:
 - a normal answer, and a NO_QUERY verdict (the model declining because the data

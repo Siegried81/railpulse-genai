@@ -1,0 +1,381 @@
+{
+  "summary": {
+    "all": {
+      "passed": 40,
+      "measured": 40,
+      "errors": 0
+    },
+    "not_in_few_shot": {
+      "passed": 33,
+      "measured": 33,
+      "errors": 0
+    },
+    "in_few_shot": {
+      "passed": 7,
+      "measured": 7,
+      "errors": 0
+    }
+  },
+  "results": [
+    {
+      "id": "count_all",
+      "question": "How many stop events are in the dataset?",
+      "in_few_shot": false,
+      "sql": "SELECT COUNT(*) AS stop_event_count FROM liveboard_records;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "avg_delay_all",
+      "question": "What is the average delay in minutes across all stop events?",
+      "in_few_shot": false,
+      "sql": "SELECT AVG(delay_seconds) / 60.0 AS avg_delay_minutes FROM liveboard_records;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "on_time_pct",
+      "question": "What percentage of trains were on time overall?",
+      "in_few_shot": true,
+      "sql": "SELECT ROUND(100.0 * SUM(CASE WHEN \"Delay Severity\" = 'On Time (<2min)' THEN 1 ELSE 0 END) / COUNT(*), 1) AS on_time_rate_pct FROM liveboard_records;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "busiest_station",
+      "question": "Which single station has the most stop events?",
+      "in_few_shot": false,
+      "sql": "SELECT \"Stations Name\", COUNT(*) AS stop_events FROM liveboard_records GROUP BY \"Stations Name\" ORDER BY stop_events DESC LIMIT 1;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "max_delay",
+      "question": "What was the longest delay recorded, in minutes?",
+      "in_few_shot": false,
+      "sql": "SELECT MAX(delay_seconds) / 60.0 AS max_delay_minutes FROM liveboard_records;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "severe_count",
+      "question": "How many stop events were classified as Severe?",
+      "in_few_shot": false,
+      "sql": "SELECT SUM(CASE WHEN \"Delay Severity\" = 'Severe (>15min)' THEN 1 ELSE 0 END) AS severe_count FROM liveboard_records;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "count_per_severity",
+      "question": "How many stop events are there in each delay severity category?",
+      "in_few_shot": false,
+      "sql": "SELECT \"Delay Severity\", COUNT(*) AS event_count FROM liveboard_records GROUP BY \"Delay Severity\" ORDER BY event_count DESC LIMIT 20;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "avg_bxl_central",
+      "question": "What is the average delay in minutes at Bruxelles-Central over the whole dataset?",
+      "in_few_shot": false,
+      "sql": "SELECT AVG(delay_seconds) / 60.0 AS avg_delay_minutes FROM liveboard_records WHERE \"Stations Name\" = 'Bruxelles-Central';",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "avg_anvers_today",
+      "question": "What is the average delay in minutes for Anvers-Central today?",
+      "in_few_shot": true,
+      "sql": "SELECT AVG(delay_seconds) / 60.0 AS avg_delay_minutes FROM liveboard_records WHERE \"Stations Name\" = 'Anvers-Central' AND \"Scheduled Date\" = (SELECT MAX(\"Scheduled Date\") FROM liveboard_records);",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "worst_weekday",
+      "question": "Which day of the week has the highest average delay?",
+      "in_few_shot": false,
+      "sql": "SELECT day_of_week, AVG(delay_seconds) / 60.0 AS avg_delay_minutes, COUNT(*) AS sample_size FROM liveboard_records GROUP BY day_of_week HAVING COUNT(*) >= 100 ORDER BY avg_delay_minutes DESC LIMIT 1;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "count_on_date",
+      "question": "How many stop events were scheduled on 2026-08-05?",
+      "in_few_shot": false,
+      "sql": "SELECT COUNT(*) AS stop_events_count FROM liveboard_records WHERE \"Scheduled Date\" = '2026-08-05';",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "avg_per_hour",
+      "question": "What is the average delay in minutes for each hour of the day?",
+      "in_few_shot": false,
+      "sql": "SELECT \"Hour\", AVG(delay_seconds) / 60.0 AS avg_delay_minutes, COUNT(*) AS sample_size FROM liveboard_records GROUP BY \"Hour\" ORDER BY \"Hour\" LIMIT 24;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "worst5_stations",
+      "question": "Which 5 stations, among those with at least 100 stop events, have the highest average delay?",
+      "in_few_shot": false,
+      "sql": "SELECT \"Stations Name\", AVG(delay_seconds) / 60.0 AS avg_delay_minutes, COUNT(*) AS sample_size FROM liveboard_records GROUP BY \"Stations Name\" HAVING COUNT(*) >= 100 ORDER BY avg_delay_minutes DESC LIMIT 5;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "distinct_stations",
+      "question": "How many different stations appear in the stop events?",
+      "in_few_shot": false,
+      "sql": "SELECT COUNT(DISTINCT \"Stations Name\") AS station_count FROM liveboard_records;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "distinct_vehicles",
+      "question": "How many distinct vehicle ids are there in the stop events?",
+      "in_few_shot": false,
+      "sql": "SELECT COUNT(DISTINCT vehicle_id) AS distinct_vehicle_count FROM liveboard_records;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "avg_weekend",
+      "question": "What is the average delay in minutes on Saturdays and Sundays combined?",
+      "in_few_shot": false,
+      "sql": "SELECT AVG(delay_seconds) / 60.0 AS avg_delay_minutes FROM liveboard_records WHERE day_of_week IN ('Saturday', 'Sunday');",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "over_30_min",
+      "question": "How many stop events had a delay of more than 30 minutes?",
+      "in_few_shot": false,
+      "sql": "SELECT SUM(CASE WHEN delay_seconds > 1800 THEN 1 ELSE 0 END) AS delayed_count FROM liveboard_records;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "category_ranking",
+      "question": "Which train category (e.g. IC, S, L) has the most delays?",
+      "in_few_shot": true,
+      "sql": "SELECT COALESCE(r.train_category, 'Unknown') AS train_category, AVG(lr.delay_seconds) / 60.0 AS avg_delay_minutes, COUNT(*) AS sample_size FROM liveboard_records lr LEFT JOIN trips t ON lr.vehicle_id = t.trip_id LEFT JOIN routes r ON t.route_id = r.route_id GROUP BY train_category HAVING COUNT(*) >= 100 ORDER BY avg_delay_minutes DESC LIMIT 1;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "ic_count",
+      "question": "How many stop events were made by IC trains?",
+      "in_few_shot": false,
+      "sql": "SELECT COUNT(*) AS ic_stop_events FROM liveboard_records lr LEFT JOIN trips t ON lr.vehicle_id = t.trip_id LEFT JOIN routes r ON t.route_id = r.route_id WHERE r.train_category = 'IC';",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "worst_date",
+      "question": "On which date was the average delay the highest?",
+      "in_few_shot": false,
+      "sql": "SELECT \"Scheduled Date\", AVG(delay_seconds) / 60.0 AS avg_delay_minutes, COUNT(*) AS sample_size FROM liveboard_records GROUP BY \"Scheduled Date\" HAVING COUNT(*) >= 100 ORDER BY avg_delay_minutes DESC LIMIT 1;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "on_time_bxl_midi",
+      "question": "What percentage of stop events at Bruxelles-Midi were on time?",
+      "in_few_shot": false,
+      "sql": "SELECT ROUND(100.0 * SUM(CASE WHEN \"Delay Severity\" = 'On Time (<2min)' THEN 1 ELSE 0 END) / COUNT(*), 1) AS on_time_rate_pct FROM liveboard_records WHERE \"Stations Name\" = 'Bruxelles-Midi';",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "compare_two_brussels",
+      "question": "Compare the average delay in minutes between Bruxelles-Central and Bruxelles-Midi.",
+      "in_few_shot": true,
+      "sql": "SELECT \"Stations Name\", AVG(delay_seconds) / 60.0 AS avg_delay_minutes FROM liveboard_records WHERE \"Stations Name\" IN ('Bruxelles-Central', 'Bruxelles-Midi') GROUP BY \"Stations Name\" LIMIT 20;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "hour_most_delayed",
+      "question": "What hour of the day has the most delays?",
+      "in_few_shot": true,
+      "sql": "SELECT \"Hour\", AVG(delay_seconds) / 60.0 AS avg_delay_minutes, COUNT(*) AS sample_size FROM liveboard_records GROUP BY \"Hour\" HAVING COUNT(*) >= 100 ORDER BY avg_delay_minutes DESC LIMIT 1;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "gand_morning_peak",
+      "question": "How many stop events were scheduled at Gand-Saint-Pierre in hours 7, 8 and 9?",
+      "in_few_shot": false,
+      "sql": "SELECT COUNT(*) AS stop_events FROM liveboard_records WHERE \"Stations Name\" = 'Gand-Saint-Pierre' AND \"Hour\" IN (7,8,9);",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "avg_last_7_days",
+      "question": "What was the average delay in minutes over the last 7 days of data?",
+      "in_few_shot": false,
+      "sql": "SELECT AVG(delay_seconds) / 60.0 AS avg_delay_minutes FROM liveboard_records WHERE \"Scheduled Date\" >= (SELECT DATE(MAX(\"Scheduled Date\"), '-6 days') FROM liveboard_records);",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "liege_top3",
+      "question": "List the 3 longest delays at Liège-Guillemins, in minutes.",
+      "in_few_shot": false,
+      "sql": "SELECT record_id, vehicle_id, delay_seconds / 60.0 AS delay_minutes FROM liveboard_records WHERE \"Stations Name\" = 'Liège-Guillemins' ORDER BY delay_seconds DESC LIMIT 3;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "stations_over_5min",
+      "question": "How many stations have an average delay above 5 minutes, counting only stations with at least 100 stop events?",
+      "in_few_shot": false,
+      "sql": "SELECT COUNT(*) AS stations_above_5min FROM (SELECT \"Stations Name\" FROM liveboard_records GROUP BY \"Stations Name\" HAVING COUNT(*) >= 100 AND AVG(delay_seconds) / 60.0 > 5);",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "date_range",
+      "question": "What are the first and last dates covered by the data?",
+      "in_few_shot": false,
+      "sql": "SELECT MIN(\"Scheduled Date\") AS first_date, MAX(\"Scheduled Date\") AS last_date FROM liveboard_records;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "canceled_total",
+      "question": "How many stop events were canceled in the whole dataset?",
+      "in_few_shot": false,
+      "sql": "SELECT SUM(CASE WHEN canceled = 1 THEN 1 ELSE 0 END) AS canceled_count FROM liveboard_records;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "severe_share_namur",
+      "question": "What percentage of stop events at Namur were Severe?",
+      "in_few_shot": false,
+      "sql": "SELECT ROUND(100.0 * SUM(CASE WHEN \"Delay Severity\" = 'Severe (>15min)' THEN 1 ELSE 0 END) / COUNT(*), 1) AS severe_pct FROM liveboard_records WHERE \"Stations Name\" = 'Namur';",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "best_station",
+      "question": "Which station, among those with at least 100 stop events, has the lowest average delay?",
+      "in_few_shot": false,
+      "sql": "SELECT \"Stations Name\", AVG(delay_seconds) / 60.0 AS avg_delay_minutes, COUNT(*) AS sample_size FROM liveboard_records GROUP BY \"Stations Name\" HAVING COUNT(*) >= 100 ORDER BY avg_delay_minutes ASC LIMIT 1;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "avg_per_date",
+      "question": "Give the average delay in minutes for each date, in date order.",
+      "in_few_shot": false,
+      "sql": "SELECT \"Scheduled Date\", AVG(delay_seconds) / 60.0 AS avg_delay_minutes FROM liveboard_records GROUP BY \"Scheduled Date\" ORDER BY \"Scheduled Date\" LIMIT 100;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "monday_count",
+      "question": "How many stop events were scheduled on Mondays?",
+      "in_few_shot": false,
+      "sql": "SELECT COUNT(*) AS monday_stop_events FROM liveboard_records WHERE day_of_week = 'Monday';",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "zero_delay",
+      "question": "How many stop events had no delay at all?",
+      "in_few_shot": false,
+      "sql": "SELECT SUM(CASE WHEN delay_seconds = 0 THEN 1 ELSE 0 END) AS no_delay_count FROM liveboard_records;",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "evening_avg",
+      "question": "What is the average delay in minutes for stop events in hours 17, 18 and 19?",
+      "in_few_shot": false,
+      "sql": "SELECT AVG(delay_seconds) / 60.0 AS avg_delay_minutes FROM liveboard_records WHERE \"Hour\" IN (17, 18, 19);",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "no_weather",
+      "question": "What was the weather at Bruxelles-Central on 2026-08-05?",
+      "in_few_shot": false,
+      "sql": "NO_QUERY: weather data is not available in the provided schema",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "no_direction",
+      "question": "Which direction has the most delayed trains?",
+      "in_few_shot": true,
+      "sql": "NO_QUERY: direction data is unavailable in this dataset",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "no_wheelchair",
+      "question": "Which stations offer step-free wheelchair access?",
+      "in_few_shot": true,
+      "sql": "NO_QUERY: wheelchair boarding data is unpopulated in this feed and cannot be reliably answered.",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "no_ticket_price",
+      "question": "How much does a ticket from Bruxelles-Central to Anvers-Central cost?",
+      "in_few_shot": false,
+      "sql": "NO_QUERY: ticket cost information is not available in the database.",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    },
+    {
+      "id": "no_staff",
+      "question": "Which staff member was on duty at Namur on 2026-08-04?",
+      "in_few_shot": false,
+      "sql": "NO_QUERY: staff duty information is not available in the dataset.",
+      "by": "groq · openai/gpt-oss-120b",
+      "status": "pass",
+      "reason": ""
+    }
+  ]
+}

@@ -20,12 +20,17 @@ APP_PATH = str(Path(__file__).resolve().parent.parent / "app" / "streamlit_app.p
 
 @pytest.fixture
 def mocked_backend(monkeypatch):
+    # Each step names a different model, and the global is left stale on
+    # purpose: the caption must come from the answers themselves.
     def fake_llm(system_prompt, user_prompt, is_valid, **kwargs):
+        llm_client.LAST_ANSWERED_BY = "stale · global"
         if "SQL generation engine" in system_prompt:
-            llm_client.LAST_ANSWERED_BY = "deepseek · deepseek-flash"
-            return "SELECT vehicle_id, delay_seconds FROM liveboard_records LIMIT 2;"
-        llm_client.LAST_ANSWERED_BY = "groq · openai/gpt-oss-120b"
-        return "Train T1 was 10 minutes late at Bordet; worth a look."
+            return llm_client.LLMAnswer(
+                "SELECT vehicle_id, delay_seconds FROM liveboard_records LIMIT 2;", "deepseek · deepseek-flash"
+            )
+        return llm_client.LLMAnswer(
+            "Train T1 was 10 minutes late at Bordet; worth a look.", "groq · openai/gpt-oss-120b"
+        )
 
     def fake_query(sql):
         return [{"vehicle_id": "T1", "delay_seconds": 600}, {"vehicle_id": "T2", "delay_seconds": 90}]

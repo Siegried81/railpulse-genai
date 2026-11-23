@@ -497,3 +497,135 @@ it blocks nothing that used to give a right answer.
 **Revisit if.** A legitimate query uses a comma join (`FROM a, b`): only the
 first table is read, so a quoted column of `b` is blocked. Or a model writes
 three-decimal French figures ("4,437"), which still read as thousands.
+
+
+## 2026-11-19: grounding without the SQL, LEFT JOIN on trips, eval harness, SambaNova
+
+**What.** Fixes from a five-part audit, each proven before and after and pinned by a test.
+
+1. **Grounding evidence.** `ungrounded_figures()` for the consultant now checks against
+   `consultant_grounding_source()`: the question and the result rows, not the SQL. A constant of
+   the query is not evidence: with `/ 60.0 ... LIMIT 50` in the SQL, "60 minutes over 50 stops"
+   passed as grounded. It is now flagged. A number typed in the question still counts. (The audit
+   also named "100 stops"; that one always passed, because 100 is in `_ALWAYS_ALLOWED`.)
+2. **Train category JOIN.** 13,453 of the 99,014 stop events (13.6%) have a `vehicle_id` with no
+   `trip_id`. The few-shot used a plain JOIN, so they vanished from every category figure. It is
+   now `LEFT JOIN ... COALESCE(train_category, 'Unknown')` with `HAVING COUNT(*) >=
+   MIN_STATION_SAMPLE`; all 99,014 rows are accounted for and 'Unknown' averages 2.05 min.
+3. **Guardrail bypass.** `FROM (json_each('[1]'))` passed `validate_query()` and SQLite ran it:
+   the table allow-list regex needs a bare name after FROM/JOIN. A parenthesis there must now open a
+   subquery. 4 new cases fail on the old code, all pass now.
+4. **`extract_sql()`.** A CTE came out as `SELECT 1 AS x) SELECT * FROM t;`, and a ";" inside a
+   string cut the query. The query is now taken from its first line starting with SELECT or WITH,
+   up to the first ";" outside quotes. CTEs are still not allowed: the guardrails reject them with a
+   clear reason instead of a syntax error.
+5. **Rate limit in `auto`.** When every provider failed and only some were rate-limited (Groq 429,
+   DeepSeek without credit), the error was a plain connection error, so `call_llm_until()` never
+   backed off. Any rate limit in the round now makes it a rate limit. The old test pinned the old
+   behaviour and was inverted.
+6. **Who answered.** `call_llm()` returns an `LLMAnswer`, a `str` carrying `.answered_by`; the
+   engine reads it instead of the module global, which two threaded requests could overwrite.
+   Ollama (`done_reason`), Anthropic (`stop_reason`) and OpenRouter (`finish_reason`) now refuse a
+   cut-off answer like Groq and DeepSeek did; OpenRouter no longer returns its `reasoning` field as
+   the answer; a malformed body is a connection error, so `auto` falls back.
+7. **Observability.** One `LLM_CALL` line per real provider call (provider, model, prompt hash,
+   attempt, latency, token counts, outcome, no prompt text). A 429 keeps the provider's own reason.
+   The consultant input says "first 20 of N rows returned" when rows were left out.
+8. **Dedup tie-break.** `keep_latest_snapshot()` sorts stably, so on equal `pulled_at` the later
+   input row wins, as in the Spark mirror. On a synthetic mix of keys and tied minutes the old
+   quicksort kept another row in 932 of 2,996 groups. On the real rebuild 43,647 stop events keep a
+   different `record_id`; 43,631 of them carry identical values (the export's duplicate polls), 16
+   change by about 60 s.
+9. **Build checks.** The database is built in a temp file and replaces the old one only if
+   `check_database()` passes: unique stop-event key, no NULL key or delay, each "Delay Severity"
+   label inside its delay range (900 s is Moderate), ISO dates, columns equal to `KNOWN_COLUMNS`.
+   A missing CSV used to be skipped silently; it now fails the build. `KNOWN_COLUMNS` gained
+   `stations.station_id` and `vehicles.vehicle_id`, which exist in the table and were missing.
+10. **No indexes.** Every few-shot query ran in 0.54 s or less without one (SQLite builds automatic
+    indexes for the JOIN). Indexes on `trips` and `routes` cut that to 0.25 s but added 9 MB to a
+    database committed to git and copied into the image. The audit's "over 120 s" was wrong: 0.59 s
+    measured.
+11. **CI.** `ci.yml` runs ruff (`ruff.toml`: E4, E7, E9, F) and pytest with `--cov-fail-under=78`
+    (80.91% measured). `publish.yml` calls it first, so no image is pushed from a red commit.
+12. **SambaNova.** New provider (OpenAI-compatible), second in `auto`: Groq, SambaNova, DeepSeek,
+    OpenRouter, Ollama. Without a key it fails before any request.
+13. **Eval harness.** `scripts/eval_text_to_sql.py` and 40 cases in `evals/text_to_sql_golden.json`
+    (35 with reference SQL, 5 expected NO_QUERY, 7 copied from the few-shot and scored apart).
+    Expected rows are computed from the database, never written down. Each case ends as pass, fail
+    or error; an error is not measured and stays out of the score.
+
+**What changed in the numbers.** After the rebuild: average delay 120.8587 s to 120.8611 s,
+on-time rate 72.2352% to 72.2342%, Severe count 2,294 unchanged, 99,014 rows, 41.6 MB. Category
+figures now include 13,453 stop events they used to drop. The figure check flags constants taken
+from the SQL that it used to accept. Tests: 166 passed and 1 skipped before, 225 passed and
+1 skipped after.
+
+**Live score: not measured yet.** Two live runs on Groq hit its daily cap: "tokens per day (TPD):
+Limit 200000, Used 199017". The first eval version scored those refusals as wrong answers and
+printed 2/40; that report was deleted and the bug fixed (item 13). The 429 messages name the
+organization, so the daily cap is per Groq account, not per key: the six keys were exhausted
+together and the messages named two organizations. This qualifies the 2026-09-30 entry ("the
+5 keys were checked to have independent quotas"), which measured per-minute limits only.
+
+**Revisit if.** The live eval on a fresh Groq day scores low on cases not in the few-shot (the
+prompt is the next thing to work on), or a legitimate question needs a CTE, or the export changes
+its severity banding (the build will stop and say so), or a query on `liveboard_records` nears the
+5 s budget (then add the index after all).
+
+
+## 2026-11-23: first live eval score, "the most delays" means the highest average, Spark mirror run for real
+
+**Live score.** `python scripts/eval_text_to_sql.py --live --provider groq --pause 30`, every case
+answered by Groq `openai/gpt-oss-120b`, no quota error:
+
+| Run | All | Not in few-shot | In few-shot |
+|---|---|---|---|
+| 2026-11-22 23:03, prompt as of 2026-11-19 | 39/40 | 33/33 | 6/7 |
+| 2026-11-23 07:41, prompt below | 40/40 | 33/33 | 7/7 |
+
+The miss was `category_ranking`, three times out of three when asked again. The few-shot gave the
+same words two meanings: "What hour of the day has the most delays?" was a count of rows with
+`delay_seconds > 0`, "Which train category has the most delays?" was an average. The model used the
+count for the category too.
+
+**What changed in the meaning of a number.** "The most delays" / "the most delayed" for a group
+(station, category, hour, day, date) is now the highest average delay, ranked with
+`HAVING COUNT(*) >= MIN_STATION_SAMPLE`, in the prompt rules, in the hour few-shot and in the golden
+set. A count of delayed rows mostly measures traffic: by count, S wins with 21,763 delayed stops out
+of 34,499; by average, EC (3.55 min over 198 stops). For the hour, the answer moves from 15h (4,718
+delayed stops, the busiest hour) to 17h (2.73 min over 6,420 stops). A count is still used when the
+question asks "how many" or for traffic. The median was checked and rejected: delays come in whole
+minutes, so it is 1.00 min for every category and almost every hour, and SQLite has no `median()`.
+
+**Golden set.** `hour_most_delayed` now ranks by `AVG(delay_seconds)` with the 100-stop guard.
+`category_ranking` expects the top category only (`LIMIT 1`), like every other "which ... has the
+most" case; the few-shot gets the same `LIMIT 1`. The old count answer still fails it.
+`test_most_delays_means_the_highest_average_everywhere` pins the single meaning in the prompt and
+the golden set; it fails on the 2026-11-19 prompt.
+
+**Prompt size.** 3,550 to 3,565 prompt tokens before, 3,732 to 3,747 after (Groq usage,
+`query_audit.log`). Still about 50 questions a day per Groq account.
+
+**Spark mirror.** It had never run: no PySpark or Java on the dev machine or in CI, so its test
+skipped. Run on 2026-11-23 with PySpark 4.3.0 and Temurin JDK 17.0.21 (winget, with
+`JAVA_HOME` set machine-wide). Two bugs:
+1. `F.to_timestamp` raises on an unparseable `pulled_at` under Spark 4's ANSI mode, so one bad row
+   failed the whole job instead of sorting last as documented. Now `F.try_to_timestamp`. Test
+   `test_unparseable_pulled_at_never_wins`: failed before, passes after.
+2. Spark started its Python workers with the `python` on PATH, on this machine the Microsoft Store
+   alias, so every task failed ("Python worker failed to connect back"). `build_spark()` now sets
+   `PYSPARK_PYTHON` to `sys.executable` unless the caller already set it. 4 of 7 tests failed
+   before, 7 of 7 pass after, with only `JAVA_HOME` set.
+
+`requirements-spark.txt` said JDK 8/11/17; Spark 4.3's classes are Java 17 bytecode (class version
+61), so it now says Java 17 or newer. On the full export, `keep_latest_snapshot` gives 980,868 to
+99,014 rows with exactly the 99,014 `record_id`s of the pandas build, so the same tie-breaks too,
+in 31 s. Writing the result fails on Windows without Hadoop's `winutils.exe`, which was not
+installed (unofficial binaries); the comparison used `collect()`.
+
+**Tests.** 225 passed and 1 skipped before. After: 228 passed and 5 skipped without Java, 233
+passed with `JAVA_HOME` set. CI still installs neither PySpark nor Java.
+
+**Revisit if.** A user means a count when asking for "the most delays" (then answer with both
+figures), a category with under 100 stops matters operationally, or Spark output has to be written
+on Windows.

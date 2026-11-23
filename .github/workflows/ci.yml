@@ -1,18 +1,23 @@
 name: tests
 
-# Runs the offline pytest suite on every push and pull request.
+# Lints and runs the offline pytest suite on every push and pull request, and
+# when publish.yml calls it before building an image.
 # No secrets are needed: tests/conftest.py blocks the network and fakes the
 # API keys, so a test that forgets to mock an LLM call fails here.
 
 on:
   push:
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # github.workflow is the caller's name when publish.yml calls this file, so
+  # the called run and the push-triggered run of the same commit do not
+  # cancel each other.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -30,4 +35,10 @@ jobs:
 
       - run: pip install -r requirements-dev.txt
 
-      - run: python -m pytest -q
+      # Rule set pinned in ruff.toml.
+      - run: python -m ruff check .
+
+      # The coverage floor sits just under the measured total, so it catches a
+      # drop without failing on noise. The Spark mirror counts as uncovered
+      # here: PySpark and Java are not installed in CI, so its test is skipped.
+      - run: python -m pytest -q --cov=app --cov=api --cov=scripts --cov-report=term --cov-fail-under=78

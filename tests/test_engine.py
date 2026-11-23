@@ -11,7 +11,7 @@ import sqlite3
 import pytest
 import requests
 
-from app import config, db, llm_client
+from app import config, llm_client
 from app.engine import answer_question
 from app.llm_client import LLMConnectionError
 
@@ -157,3 +157,44 @@ def test_llm_unreachable_on_answer_step_keeps_sql_and_rows(fake_post, tiny_db):
         {"Stations Name": "Gouvy", "delay_seconds": 600},
         {"Stations Name": "Gouvy", "delay_seconds": 90},
     ]
+
+
+def test_a_constant_of_the_sql_does_not_ground_a_figure(fake_post, tiny_db):
+    """"/ 60.0" and "LIMIT 50" sit in the SQL, but they are not evidence.
+
+    Before the fix the check read the whole consultant input, SQL included,
+    so "60 minutes" and "50 stops" here passed as grounded.
+    """
+    sql = 'SELECT "Stations Name", delay_seconds / 60.0 AS delay_minutes FROM liveboard_records LIMIT 50;'
+    fake_post.append(_groq_reply(sql))
+    bad = "Gouvy reached 60 minutes of delay over 50 stops; worth a look."
+    fake_post.extend([_groq_reply(bad), _groq_reply(bad), _groq_reply(bad)])
+
+    result = answer_question("Delays at Gouvy?")
+
+    assert result["ungrounded"] == ["60", "50"]
+
+
+def test_a_number_from_the_question_stays_grounded(fake_post, tiny_db):
+    fake_post.append(_groq_reply(SELECT_SQL + " "))
+    fake_post.append(_groq_reply("Of the 2 stops you asked about at Gouvy, the worst was 10 minutes late."))
+
+    result = answer_question("Show the 2 most delayed stops at Gouvy")
+
+    assert result["ungrounded"] == []
+
+
+def test_models_are_read_from_each_answer_not_from_the_global(monkeypatch, tiny_db):
+    """The UI and the API run requests on threads; a global written by another
+    request between the two steps must not relabel this one's answer."""
+    def fake_llm(system_prompt, user_prompt, is_valid, **kwargs):
+        llm_client.LAST_ANSWERED_BY = "other request · other model"
+        if "SQL generation engine" in system_prompt:
+            return llm_client.LLMAnswer(SELECT_SQL, "sambanova · m1")
+        return llm_client.LLMAnswer("Gouvy saw delays up to 10 minutes; worth a look.", "groq · m2")
+
+    monkeypatch.setattr(llm_client, "call_llm_until", fake_llm)
+    result = answer_question("Delays at Gouvy?")
+
+    assert result["sql_by"] == "sambanova · m1"
+    assert result["answer_by"] == "groq · m2"
